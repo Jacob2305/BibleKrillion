@@ -5,6 +5,8 @@ A Bible trivia game where **rarer correct answers climb higher**. Answer 7 open-
 
 > Full setup and deploy guide (Supabase, Vercel, env vars, pre-event checklist) is written in step 8.
 
+**Live:** https://bible-dive-nu.vercel.app · before an event, go through [EVENT-CHECKLIST.md](EVENT-CHECKLIST.md).
+
 ## Develop
 
 ```bash

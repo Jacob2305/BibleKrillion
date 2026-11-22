@@ -11,3 +11,7 @@ coverage
 # local screenshots
 shots/
 *.tsbuildinfo
+
+.vercel
+.env*
+!.env.example
