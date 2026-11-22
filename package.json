@@ -1,0 +1,44 @@
+{
+  "name": "bible-dive",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Bible Dive: a Bible trivia game where rarer correct answers dive deeper.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "validate-bank": "tsx scripts/validate-bank.ts",
+    "review-bank": "tsx scripts/review-bank.ts",
+    "format-bank": "tsx scripts/format-bank.ts",
+    "check-supabase": "tsx scripts/check-supabase.ts",
+    "merge-approved": "tsx scripts/merge-approved.ts",
+    "check-judge": "tsx scripts/check-judge.ts",
+    "load-test": "tsx scripts/load-test.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.119.2",
+    "qrcode": "^1.5.4",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
+    "@types/node": "^26.6.6",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "tailwindcss": "^4.3.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
+  }
+}

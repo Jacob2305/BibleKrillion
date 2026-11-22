@@ -1,0 +1,21 @@
+{
+  // Browser code (Vite + React). May import shared pure modules from lib/game,
+  // but must never import the answer bank or the matcher's server wrappers.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "types": ["vite/client"]
+  },
+  "include": ["src", "lib"],
+  "exclude": ["lib/**/__tests__"]
+}

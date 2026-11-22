@@ -1,0 +1,224 @@
+@import "tailwindcss";
+
+/*
+ * Pixel-sky theme: chunky square boxes, pixel fonts, a dusk sky you climb
+ * through. Fonts are loaded in index.html: Jersey 15 for text (clear digits),
+ * Pixelify Sans for the logo only, VT323 for numbers.
+ */
+@theme {
+  --color-night-950: #0a0a24;
+  --color-night-900: #13163f;
+  --color-night-800: #1d2560;
+  --color-night-700: #2b3a8a;
+  --color-sun-300: #ffd866;
+  --color-sun-400: #ffbf3c;
+  --color-cloud-50: #fff8ec;
+
+  --font-sans: "Jersey 15", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Jersey 15", ui-sans-serif, system-ui, sans-serif;
+  --font-logo: "Pixelify Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "VT323", ui-monospace, "Cascadia Mono", monospace;
+
+  /* Pixel art has no curves: every rounded-* utility becomes a square. */
+  --radius-xs: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+  --radius-2xl: 0;
+  --radius-3xl: 0;
+
+  --animate-shake: shake 0.4s steps(4) ;
+  --animate-bob: bob 1.6s steps(4) infinite;
+  --animate-rise: rise 0.45s steps(5) both;
+  --animate-drift: drift 90s linear infinite;
+  --animate-twinkle: twinkle 3s steps(2) infinite;
+
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-6px); }
+    50% { transform: translateX(6px); }
+    75% { transform: translateX(-4px); }
+  }
+  @keyframes bob {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-8px); }
+  }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes drift {
+    from { transform: translateX(-30vw); }
+    to { transform: translateX(130vw); }
+  }
+  @keyframes twinkle {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-night-900);
+  color: var(--color-cloud-50);
+  font-family: var(--font-sans);
+  /* Pixel fonts have small x-heights; scale every font to read like a normal 16px face. */
+  font-size-adjust: 0.53;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2 {
+  text-shadow: 3px 3px 0 rgb(0 0 0 / 0.35);
+}
+
+/* Chunky pixel panel: square, 2px outline, hard drop shadow. */
+@utility pixel-panel {
+  background: color-mix(in oklab, var(--color-night-950) 62%, transparent);
+  box-shadow:
+    0 0 0 2px color-mix(in oklab, var(--color-cloud-50) 22%, transparent),
+    6px 6px 0 0 rgb(0 0 0 / 0.35);
+}
+
+/* Beveled pixel button: light top-left edge, dark bottom-right edge, presses down. */
+@utility pixel-button {
+  box-shadow:
+    inset -4px -4px 0 0 rgb(0 0 0 / 0.28),
+    inset 4px 4px 0 0 rgb(255 255 255 / 0.45),
+    4px 4px 0 0 rgb(0 0 0 / 0.45);
+  &:active {
+    transform: translate(2px, 2px);
+    box-shadow:
+      inset -4px -4px 0 0 rgb(0 0 0 / 0.28),
+      inset 4px 4px 0 0 rgb(255 255 255 / 0.45),
+      2px 2px 0 0 rgb(0 0 0 / 0.45);
+  }
+}
+
+.pixelated {
+  image-rendering: pixelated;
+  shape-rendering: crispEdges;
+}
+
+/* ───────── the reveal climb (src/game/climb) ───────── */
+.climb {
+  /* One art pixel: chunky on phones, bigger on a projector. */
+  --px: max(3px, 0.55vmin);
+}
+.climb-label {
+  font-size: clamp(0.875rem, 1.4vmin + 0.45rem, 1.6rem);
+}
+.climb-label-big {
+  font-size: clamp(1.125rem, 2.2vmin + 0.5rem, 2.5rem);
+}
+.climb-flash {
+  animation: climb-flash 700ms ease-out both;
+}
+@keyframes climb-flash {
+  from { opacity: var(--flash, 0.9); }
+  to { opacity: 0; }
+}
+.climb-spark {
+  animation: climb-spark 800ms steps(8) both;
+}
+@keyframes climb-spark {
+  from { opacity: 1; transform: translate(-50%, -50%); }
+  70% { opacity: 1; }
+  to { opacity: 0; transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))); }
+}
+.climb-ring {
+  width: 14vmin;
+  height: 14vmin;
+  border: calc(2 * var(--px)) solid;
+  animation: climb-ring 650ms steps(7) both;
+}
+@keyframes climb-ring {
+  from { opacity: 1; transform: translate(-50%, -50%) scale(0.2); }
+  to { opacity: 0; transform: translate(-50%, -50%) scale(3.4); }
+}
+.climb-stamp {
+  animation: climb-stamp 420ms steps(5) both;
+}
+@keyframes climb-stamp {
+  from { opacity: 0; transform: scale(2.6); }
+  70% { opacity: 1; transform: scale(0.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+.climb-rise {
+  animation: climb-rise 400ms 260ms steps(4) both;
+}
+@keyframes climb-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.climb-rays {
+  width: 160vmax;
+  height: 160vmax;
+  background: repeating-conic-gradient(rgb(255 216 102 / 0.32) 0 7deg, transparent 7deg 20deg);
+  mask-image: radial-gradient(circle, black 8%, transparent 55%);
+  animation: climb-rays 12s steps(48) infinite, climb-rise 500ms both;
+}
+@keyframes climb-rays {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+.climb-quake {
+  animation: climb-quake 450ms steps(6);
+}
+@keyframes climb-quake {
+  0%, 100% { transform: translate(0, 0); }
+  20% { transform: translate(-8px, 4px); }
+  40% { transform: translate(7px, -6px); }
+  60% { transform: translate(-5px, -3px); }
+  80% { transform: translate(4px, 5px); }
+}
+.climb-flap-a {
+  animation: climb-flap-a 240ms step-end infinite;
+}
+.climb-flap-b {
+  animation: climb-flap-b 240ms step-end infinite;
+}
+@keyframes climb-flap-a {
+  0% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+@keyframes climb-flap-b {
+  0% { opacity: 0; }
+  50%, 100% { opacity: 1; }
+}
+.climb-waves {
+  animation: climb-waves 1.4s steps(5) infinite;
+}
+@keyframes climb-waves {
+  to { background-position-x: calc(10 * var(--px)); }
+}
+.climb-waterfall {
+  animation: climb-waterfall 0.6s steps(3) infinite;
+}
+@keyframes climb-waterfall {
+  to { background-position-y: calc(6 * var(--px)); }
+}
+.climb-shooting {
+  rotate: 16deg;
+  animation: climb-shooting 3.2s 0.4s linear infinite;
+}
+@keyframes climb-shooting {
+  0% { opacity: 0; translate: 0 0; }
+  10% { opacity: 1; }
+  40%, 100% { opacity: 0; translate: 55vw 16vh; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

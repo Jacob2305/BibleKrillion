@@ -1,0 +1,13 @@
+{
+  // Vitest test files (run in Node).
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true
+  },
+  "include": ["lib/**/__tests__", "server/**/__tests__", "api/**/*.test.ts", "scripts/**/*.test.ts"],
+  "exclude": []
+}
