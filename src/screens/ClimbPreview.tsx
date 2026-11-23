@@ -9,6 +9,9 @@ export default function ClimbPreview() {
   const [stage, setStage] = useState(params.get("size") === "stage");
   const [run, setRun] = useState(0);
   const climb = useRevealClimb({ tier: tier ?? "miss", active: tier !== null, roundKey: run, size: stage ? "stage" : "phone" });
+  // ?zone=N shows one zone of the map, still, with no HUD (for checking the art).
+  const zone = params.get("zone");
+  if (zone !== null) return <World target={Number(zone)} instant />;
   return (
     <div className="relative min-h-dvh">
       <World {...climb.world} notes={stage ? { plankton: "14 climbers", schooler: "6 climbers", deep_cut: "2 climbers" } : undefined} />

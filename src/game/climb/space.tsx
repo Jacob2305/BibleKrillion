@@ -1,0 +1,149 @@
+/** Deep Cut (outer space) and One in a Million (the cosmos). Art lives in space-art.ts. */
+import { seeded } from "./art";
+import { gridUrl } from "./sky-art";
+import {
+  asteroid,
+  bluePlanet,
+  comet,
+  moon,
+  NEBULA_PALETTE,
+  nebulaClouds,
+  redPlanet,
+  ringedPlanet,
+  SPARKLE_4,
+  SPARKLE_8,
+  SPARKLE_TINTS,
+  SPARKLE_TINY,
+  spiralGalaxy,
+  starCluster,
+} from "./space-art";
+import { Art, Stars, Zone, px } from "./zone";
+
+// ───────────────────────── Deep Cut: outer space ─────────────────────────
+
+const RINGED = ringedPlanet(17);
+const MOON = moon(14, 12);
+const RED = redPlanet(10, 8);
+const BLUE = bluePlanet(6, 3);
+const COMET = comet(64);
+const ROCKS = [
+  { a: asteroid(5, 4), x: 63, y: 9 },
+  { a: asteroid(3.5, 9), x: 70, y: 14 },
+  { a: asteroid(2.5, 17), x: 77, y: 7 },
+  { a: asteroid(6, 23), x: 91, y: 6 },
+  { a: asteroid(2, 31), x: 56, y: 16 },
+  { a: asteroid(3, 40), x: 83, y: 16 },
+];
+
+export function OuterSpace() {
+  return (
+    <Zone index={4}>
+      <Stars count={90} seed={44} />
+      <Stars count={14} seed={45} color="#a8e4ff" />
+      <Stars count={10} seed={46} color="#ffd9a0" />
+      <Art art={MOON.art} palette={MOON.palette} x={8} y={72} />
+      <Art art={RINGED.art} palette={RINGED.palette} x={72} y={66} center />
+      <div className="space-comet absolute" style={{ left: "4%", bottom: "40%" }}>
+        <Art art={COMET.art} palette={COMET.palette} x={0} y={0} className="relative" />
+      </div>
+      <Art art={RED.art} palette={RED.palette} x={15} y={19} />
+      <Art art={BLUE.art} palette={BLUE.palette} x={86} y={30} center />
+      {ROCKS.map((r, i) => (
+        <Art key={i} art={r.a.art} palette={r.a.palette} x={r.x} y={r.y} center />
+      ))}
+    </Zone>
+  );
+}
+
+// ───────────────────────── One in a Million: the cosmos ─────────────────────────
+
+const NEB_W = 320;
+const NEB_H = 104;
+/** The nebulae are big, so they're drawn as images (no DOM nodes per pixel run). */
+const NEBULA_TOP = gridUrl(nebulaClouds(NEB_W, NEB_H, 3, ["M", "T", "G", "M", "T", "G"]), NEBULA_PALETTE);
+/** A dimmer, mostly violet layer that fills the band across the middle. */
+const NEBULA_MID = gridUrl(nebulaClouds(NEB_W, NEB_H, 37, ["G", "M", "G", "G", "M", "G"], "both", 0.45), NEBULA_PALETTE);
+const NEBULA_LOW = gridUrl(nebulaClouds(NEB_W, NEB_H, 21, ["G", "M", "T", "G", "M", "T"], "both", 0.8), NEBULA_PALETTE);
+
+function Nebula({ url, y }: { url: string; y: number }) {
+  return (
+    <div
+      className="absolute"
+      style={{
+        left: "50%",
+        bottom: `${y}%`,
+        width: px(NEB_W),
+        height: px(NEB_H),
+        transform: "translate(-50%, 50%)",
+        backgroundImage: url,
+        backgroundSize: "100% 100%",
+        imageRendering: "pixelated",
+      }}
+    />
+  );
+}
+/** Sized to sit in the gap between the answer panel and the dove. */
+const GALAXY = spiralGalaxy(84, 36, 6);
+/** Far-off galaxies, one each side: a tilted spiral and a nearly edge-on one. */
+const FAR_GALAXY_A = spiralGalaxy(46, 24, 13);
+const FAR_GALAXY_B = spiralGalaxy(40, 12, 29);
+const CLUSTER_A = starCluster(32, 50, 5);
+const CLUSTER_B = starCluster(32, 50, 9);
+const FAR_RINGED = ringedPlanet(7, 18);
+const FAR_BLUE = bluePlanet(5, 11);
+const SPARKLES = [SPARKLE_4, SPARKLE_8, SPARKLE_TINY, SPARKLE_TINY];
+
+/**
+ * Sparkle spots: alternating left and right halves and stepping up the screen,
+ * so both sides get the same number, kept away from the calm middle.
+ */
+const SPARKLE_SPOTS = (() => {
+  const r = seeded(55);
+  const out: { x: number; y: number; kind: number; tint: number; delay: number }[] = [];
+  const n = 18;
+  for (let i = 0; i < n; i++) {
+    const left = i % 2 === 0;
+    const y = 5 + ((i + r()) / n) * 88;
+    let x = 3 + r() * 44;
+    if (y > 30 && y < 66) x = 3 + r() * 24; // middle band: hug the edges
+    out.push({ x: left ? x : 100 - x, y, kind: Math.floor(r() * SPARKLES.length), tint: Math.floor(r() * SPARKLE_TINTS.length), delay: r() * 3 });
+  }
+  return out;
+})();
+
+export function Cosmos() {
+  return (
+    <Zone index={5}>
+      <Nebula url={NEBULA_MID} y={46} />
+      <Nebula url={NEBULA_TOP} y={72} />
+      <Nebula url={NEBULA_LOW} y={16} />
+      <Stars count={170} seed={66} />
+      <Stars count={24} seed={67} color="#a8e4ff" />
+      <Stars count={18} seed={68} color="#ffb0dc" />
+      <Stars count={12} seed={69} color="#ffe6a8" />
+      <div
+        className="absolute inset-x-0 top-0 h-2/3"
+        style={{ background: "radial-gradient(ellipse 70% 60% at 50% 0%, rgba(255,216,102,0.45), rgba(255,216,102,0) 70%)" }}
+      />
+      <Art art={FAR_GALAXY_A.art} palette={FAR_GALAXY_A.palette} x={12} y={84} center />
+      <Art art={FAR_GALAXY_B.art} palette={FAR_GALAXY_B.palette} x={88} y={20} center />
+      <Art art={FAR_RINGED.art} palette={FAR_RINGED.palette} x={90} y={80} center />
+      <Art art={FAR_BLUE.art} palette={FAR_BLUE.palette} x={9} y={18} center />
+      <Art art={CLUSTER_A.art} palette={CLUSTER_A.palette} x={10} y={50} center />
+      <Art art={CLUSTER_B.art} palette={CLUSTER_B.palette} x={90} y={46} center />
+      <Art art={GALAXY.art} palette={GALAXY.palette} x={50} y={65} center />
+      {SPARKLE_SPOTS.map((s, i) => (
+        <Art
+          key={i}
+          art={SPARKLES[s.kind]!}
+          palette={SPARKLE_TINTS[s.tint]!}
+          x={s.x}
+          y={s.y}
+          center
+          className="animate-twinkle"
+          style={{ animationDelay: `${s.delay}s` }}
+        />
+      ))}
+    </Zone>
+  );
+}

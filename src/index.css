@@ -222,3 +222,67 @@ h2 {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── space.tsx: the comet in Deep Cut creeps along its path in pixel steps ── */
+.space-comet {
+  animation: space-comet 24s steps(48) infinite alternate;
+}
+@keyframes space-comet {
+  from { translate: 0 0; }
+  to { translate: calc(-12 * var(--px)) calc(5 * var(--px)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .space-comet { animation: none; }
+}
+
+/* ───────── open sky + edge of space (src/game/climb/sky.tsx) ───────── */
+/* Slow sideways drift (balloons, clouds), in whole art pixels. */
+.sky-sway {
+  animation: sky-sway var(--sway, 14s) steps(4) infinite alternate;
+}
+@keyframes sky-sway {
+  from { translate: calc(-2 * var(--px)) 0; }
+  to { translate: calc(2 * var(--px)) 0; }
+}
+/* Gentle up-and-down float, one art pixel at a time. */
+.sky-float {
+  animation: sky-float var(--float, 2.4s) steps(2) infinite alternate;
+}
+@keyframes sky-float {
+  from { transform: translateY(0); }
+  to { transform: translateY(calc(-2 * var(--px))); }
+}
+/* Aurora curtains creep sideways one pixel per step (tiles are 240 art pixels wide). */
+.sky-aurora {
+  animation: sky-aurora var(--dur, 150s) steps(240) infinite;
+}
+@keyframes sky-aurora {
+  from { background-position-x: 0; }
+  to { background-position-x: calc(240 * var(--px)); }
+}
+/* Bright aurora rays flicker. */
+.sky-shimmer {
+  animation: sky-shimmer 2.6s steps(1) infinite;
+}
+@keyframes sky-shimmer {
+  0%, 100% { opacity: 0.85; }
+  20% { opacity: 0.35; }
+  45% { opacity: 1; }
+  70% { opacity: 0.55; }
+}
+
+/* ───────── sea zones (src/game/climb/sea.tsx) ───────── */
+/* Sea surface and creek: 20-pixel wave tiles roll sideways a pixel-pair per step. */
+.sea-waves {
+  animation: sea-waves 2.2s steps(10) infinite;
+}
+@keyframes sea-waves {
+  to { background-position-x: calc(20 * var(--px)); }
+}
+/* Waterfall: 24-pixel tile streams down. */
+.sea-fall {
+  animation: sea-fall 0.9s steps(8) infinite;
+}
+@keyframes sea-fall {
+  to { background-position-y: calc(24 * var(--px)); }
+}

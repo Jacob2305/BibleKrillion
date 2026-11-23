@@ -56,7 +56,8 @@ export interface WorldProps {
   onExplore?: (exploring: boolean) => void;
 }
 
-const LOWEST = CLIMB_START - 0.4;
+/** How far below the start you can look: just the sea bed and a little ground. */
+const LOWEST = CLIMB_START - 0.12;
 const HIGHEST = CLIMB_ZONES.length - 1;
 const clampCamera = (c: number) => Math.min(HIGHEST, Math.max(LOWEST, c));
 
@@ -76,71 +77,122 @@ export function World({
   onExplore,
 }: WorldProps) {
   const worldRef = useRef<HTMLDivElement>(null);
+  /** Where the camera is drawn right now. */
   const camera = useRef(target);
   const callbacks = useRef({ onFrame, onArrive });
   callbacks.current = { onFrame, onArrive };
   const [reached, setReached] = useState(() => Math.floor(target + 1e-6));
 
-  // Exploring adds an offset to the screen's own camera target. Any change of target (or turning
-  // exploring off) drops the offset, and the screen's own move wins.
+  // Looking around adds an offset to the screen's own camera target. It lives in a
+  // ref and the camera is moved straight on the DOM, so scrolling and dragging never
+  // re-render the world (that, plus restarting an animation on every wheel event,
+  // is what made it jumpy before).
   const offset = useRef(0);
-  const how = useRef<"base" | "drag" | "wheel" | "glide">("base");
-  const base = useRef({ target, instant, durationMs, explore });
-  const [tick, setTick] = useState(0);
-  if (base.current.target !== target || base.current.instant !== instant || base.current.durationMs !== durationMs) {
-    base.current = { target, instant, durationMs, explore };
-    offset.current = 0;
-    how.current = "base";
-  } else if (base.current.explore !== explore) {
-    base.current = { ...base.current, explore };
-    if (!explore && offset.current !== 0) {
-      offset.current = 0;
-      how.current = "glide";
-    }
-  }
-  const effective = clampCamera(target + offset.current);
+  const targetRef = useRef(target);
+  targetRef.current = target;
+  const frame = useRef(0);
+  const [exploring, setExploring] = useState(false);
+  /** The transform is only set by `place` after the first render, so a re-render never moves the camera back a frame. */
+  const [initialStyle] = useState<CSSProperties>(() => ({ transform: `translate3d(0, ${target * 100}%, 0)` }));
 
-  useLayoutEffect(() => {
-    const mode = how.current;
-    const own = mode === "base"; // the screen's move (not the player looking around)
-    const place = (c: number) => {
-      camera.current = c;
-      if (worldRef.current) worldRef.current.style.transform = `translate3d(0, ${c * 100}%, 0)`;
-      if (own) callbacks.current.onFrame?.(c);
-      const r = Math.floor(c + 1e-6);
-      setReached((prev) => (prev === r ? prev : r));
-    };
-    const arrive = () => {
-      if (own) callbacks.current.onArrive?.();
-    };
-    const from = camera.current;
-    if ((own && instant) || mode === "drag" || prefersReducedMotion() || Math.abs(from - effective) < 1e-4) {
-      place(effective);
-      arrive();
-      return;
-    }
-    const ms = mode === "wheel" ? 140 : own ? (durationMs ?? glideMs(from, effective)) : glideMs(from, effective);
-    const start = performance.now();
-    let frame = 0;
+  const place = useCallback((c: number, own: boolean) => {
+    camera.current = c;
+    if (worldRef.current) worldRef.current.style.transform = `translate3d(0, ${c * 100}%, 0)`;
+    if (own) callbacks.current.onFrame?.(c);
+    const r = Math.floor(c + 1e-6);
+    setReached((prev) => (prev === r ? prev : r));
+  }, []);
+
+  const stop = () => {
+    cancelAnimationFrame(frame.current);
+    frame.current = 0;
+  };
+
+  /** An eased move of fixed length (the screen's own moves, and gliding back home). */
+  const glide = useCallback(
+    (to: number, ms: number, own: boolean) => {
+      stop();
+      const from = camera.current;
+      if (ms <= 0 || prefersReducedMotion() || Math.abs(from - to) < 1e-4) {
+        place(to, own);
+        if (own) callbacks.current.onArrive?.();
+        return;
+      }
+      const start = performance.now();
+      const step = (now: number) => {
+        const t = Math.min(1, (now - start) / ms);
+        place(from + (to - from) * easeClimb(t), own);
+        if (t < 1) frame.current = requestAnimationFrame(step);
+        else {
+          frame.current = 0;
+          if (own) callbacks.current.onArrive?.();
+        }
+      };
+      frame.current = requestAnimationFrame(step);
+    },
+    [place],
+  );
+
+  /** Follow the explore target smoothly (exponential easing), for the wheel and for flicks. */
+  const follow = useCallback(() => {
+    if (frame.current) return;
+    let last = performance.now();
     const step = (now: number) => {
-      const t = Math.min(1, (now - start) / ms);
-      place(from + (effective - from) * (mode === "wheel" ? t : easeClimb(t)));
-      if (t < 1) frame = requestAnimationFrame(step);
-      else arrive();
+      const dt = Math.min(64, now - last);
+      last = now;
+      const goal = clampCamera(targetRef.current + offset.current);
+      const k = 1 - Math.exp(-dt / 90);
+      const next = camera.current + (goal - camera.current) * k;
+      if (Math.abs(goal - next) < 0.0005) {
+        place(goal, false);
+        frame.current = 0;
+        return;
+      }
+      place(next, false);
+      frame.current = requestAnimationFrame(step);
     };
-    frame = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(frame);
-  }, [effective, instant, durationMs, tick]);
+    frame.current = requestAnimationFrame(step);
+  }, [place]);
+
+  const setOffset = useCallback(
+    (o: number) => {
+      offset.current = o;
+      const on = Math.abs(o) > 0.02;
+      setExploring((prev) => (prev === on ? prev : on));
+    },
+    [],
+  );
+
+  // The screen's own camera move: drop any looking around and go there.
+  useLayoutEffect(() => {
+    setOffset(0);
+    const from = camera.current;
+    glide(target, instant ? 0 : (durationMs ?? glideMs(from, target)), true);
+    return stop;
+  }, [target, instant, durationMs, glide, setOffset]);
+
+  // Exploring switched off while looking around: glide back to the screen's spot.
+  useEffect(() => {
+    if (explore || offset.current === 0) return;
+    setOffset(0);
+    glide(targetRef.current, glideMs(camera.current, targetRef.current), false);
+  }, [explore, glide, setOffset]);
 
   // Scroll, drag or swipe the background to look around.
   useEffect(() => {
     if (!explore) return;
-    const nudge = (dz: number, mode: "drag" | "wheel") => {
-      const next = clampCamera(target + offset.current + dz) - target;
-      if (Math.abs(next - offset.current) < 1e-5) return;
-      offset.current = next;
-      how.current = mode;
-      setTick((n) => n + 1);
+    const base = () => targetRef.current;
+    /** Move the explore goal by `dz` zones (clamped to the map). */
+    const nudge = (dz: number) => {
+      const goal = clampCamera(base() + offset.current + dz);
+      setOffset(goal - base());
+    };
+    /** Drags follow the finger 1:1: move the camera itself, no easing. */
+    const drag = (dz: number) => {
+      stop();
+      const c = clampCamera(camera.current + dz);
+      setOffset(c - base());
+      place(c, false);
     };
     const onMap = (el: EventTarget | null) => !(el instanceof Element && el.closest(INTERACTIVE));
     const pageScrolls = () => document.documentElement.scrollHeight > window.innerHeight + 4;
@@ -148,76 +200,97 @@ export function World({
     const onWheel = (e: WheelEvent) => {
       if (!onMap(e.target) || pageScrolls()) return;
       const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * window.innerHeight : e.deltaY;
-      nudge(-dy / window.innerHeight, "wheel"); // scroll down = look down (towards the sea)
+      nudge(-dy / window.innerHeight); // scroll down = look down (towards the sea)
+      follow();
     };
-    let touchY: number | null = null;
+
+    // Drags (touch and mouse) with a little momentum when let go.
+    let dragY: number | null = null;
+    let velocity = 0; // zones per ms
+    let lastT = 0;
+    const dragStart = (y: number) => {
+      dragY = y;
+      velocity = 0;
+      lastT = performance.now();
+    };
+    const dragMove = (y: number) => {
+      if (dragY === null || y === dragY) return;
+      const dz = (y - dragY) / window.innerHeight; // the world follows your finger
+      const now = performance.now();
+      const dt = Math.max(1, now - lastT);
+      velocity = 0.7 * velocity + 0.3 * (dz / dt);
+      lastT = now;
+      dragY = y;
+      drag(dz);
+    };
+    const dragEnd = () => {
+      if (dragY === null) return;
+      dragY = null;
+      if (performance.now() - lastT < 80 && Math.abs(velocity) > 0.0004) {
+        nudge(velocity * 220); // coast a little in the direction of the flick
+        follow();
+      }
+    };
+
     const onTouchStart = (e: TouchEvent) => {
-      touchY = e.touches.length === 1 && onMap(e.target) ? e.touches[0]!.clientY : null;
+      if (e.touches.length === 1 && onMap(e.target)) dragStart(e.touches[0]!.clientY);
+      else dragY = null;
     };
     const onTouchMove = (e: TouchEvent) => {
-      if (touchY === null || e.touches.length !== 1) return;
-      const y = e.touches[0]!.clientY;
+      if (dragY === null || e.touches.length !== 1) return;
       e.preventDefault(); // the map moves, not the page
-      nudge((y - touchY) / window.innerHeight, "drag"); // the world follows your finger
-      touchY = y;
+      dragMove(e.touches[0]!.clientY);
     };
-    const onTouchEnd = () => {
-      touchY = null;
-    };
-    let mouseY: number | null = null;
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType !== "mouse" || e.button !== 0 || !onMap(e.target)) return;
-      mouseY = e.clientY;
+      dragStart(e.clientY);
     };
     const onPointerMove = (e: PointerEvent) => {
-      if (mouseY === null || e.clientY === mouseY) return;
-      nudge((e.clientY - mouseY) / window.innerHeight, "drag");
-      mouseY = e.clientY;
+      if (e.pointerType !== "mouse" || dragY === null) return;
+      dragMove(e.clientY);
       window.getSelection()?.removeAllRanges();
-    };
-    const onPointerUp = () => {
-      mouseY = null;
     };
     window.addEventListener("wheel", onWheel, { passive: true });
     window.addEventListener("touchstart", onTouchStart, { passive: true });
     window.addEventListener("touchmove", onTouchMove, { passive: false });
-    window.addEventListener("touchend", onTouchEnd);
+    window.addEventListener("touchend", dragEnd);
+    window.addEventListener("touchcancel", dragEnd);
     window.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointerup", dragEnd);
     return () => {
       window.removeEventListener("wheel", onWheel);
       window.removeEventListener("touchstart", onTouchStart);
       window.removeEventListener("touchmove", onTouchMove);
-      window.removeEventListener("touchend", onTouchEnd);
+      window.removeEventListener("touchend", dragEnd);
+      window.removeEventListener("touchcancel", dragEnd);
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointerup", dragEnd);
     };
-  }, [explore, target]);
+  }, [explore, follow, place, setOffset]);
 
-  const exploring = explore && Math.abs(offset.current) > 0.02;
   const onExploreRef = useRef(onExplore);
   onExploreRef.current = onExplore;
-  useEffect(() => onExploreRef.current?.(exploring), [exploring]);
+  const showExploring = explore && exploring;
+  useEffect(() => onExploreRef.current?.(showExploring), [showExploring]);
   const backHome = () => {
-    offset.current = 0;
-    how.current = "glide";
-    setTick((n) => n + 1);
+    setOffset(0);
+    glide(targetRef.current, glideMs(camera.current, targetRef.current), false);
   };
 
   return (
     <>
       <div aria-hidden="true" className="climb pointer-events-none fixed inset-0 z-0 overflow-hidden bg-[#04213a]">
-        <div ref={worldRef} className="absolute inset-0 will-change-transform" style={{ transform: `translate3d(0, ${camera.current * 100}%, 0)` }}>
+        <div ref={worldRef} className="absolute inset-0 will-change-transform" style={initialStyle}>
           <ClimbWorld />
-          {(markers || exploring) &&
+          {(markers || showExploring) &&
             CLIMB_ZONES.map((z, i) => (
               <Marker key={z.tier} index={i} tier={z.tier} place={z.place} note={notes?.[z.tier]} passed={markers && reached >= i} />
             ))}
         </div>
       </div>
-      {exploring && (
+      {showExploring && (
         <button
           type="button"
           onClick={backHome}
@@ -484,7 +557,7 @@ export function RevealHud({
         <div
           aria-hidden="true"
           className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
-          style={{ width: px(18 * (stage ? 1.6 : 2)) }}
+          style={{ width: px(DOVE_UP[0].length * (stage ? 0.8 : 1)) }}
         >
           <div
             className={phase === "ready" || (landed && !miss) ? "animate-bob" : ""}
