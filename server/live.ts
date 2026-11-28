@@ -32,7 +32,7 @@ import { allPrompts, getPrompt, matchPrompt, publicPrompt, revealFor } from "./b
 import { MAX_ANSWER_LENGTH, SUBMIT_GRACE_MS, promptSeconds } from "./config.js";
 import { HttpError, json, readJsonBody, withErrors } from "./http.js";
 import { EVENT_PROMPT_IDS } from "./event-set.js";
-import { BOT_NAMES, BOT_TEAM, addBots, botsAnswer, visibleSubs } from "./live-bots.js";
+import { BOT_TEAM, addBots, botsAnswer, visibleSubs } from "./live-bots.js";
 import { getBroadcaster, type Broadcaster } from "./live-broadcast.js";
 import { ROOM_TTL_MS, getLiveStore, type LivePlayer, type LiveRoom, type LiveStore, type LiveSubmission, type RoomPatch } from "./live-store.js";
 import { cleanNickname, cleanTeamName } from "./names.js";
@@ -843,7 +843,8 @@ const defaultDeps: LiveDeps = {
   broadcaster: getBroadcaster,
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   tiers: getTierStore,
-  bots: BOT_NAMES.length, // every name in server/live-bots.ts joins each hosted room
+  // Test bots are off. Set to BOT_NAMES.length (server/live-bots.ts) to fill hosted rooms with them again.
+  bots: 0,
 };
 
 export function createLiveHandler(deps: LiveDeps = defaultDeps) {
