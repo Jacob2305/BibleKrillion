@@ -205,6 +205,8 @@ export async function answer(body: Record<string, unknown>, deps: DailyDeps): Pr
         await logRejectedAnswer({ promptId: prompt.id, raw, reason: "not_in_bank", mode: "daily" });
         return { status: "rejected", message: judgeRejectionMessage(verdict.reason, DAILY_MESSAGES.rejected) };
       }
+      // A bank answer worded differently: recommend it, never lock it unasked.
+      if (verdict.kind === "bank" && body.confirm !== true) return { status: "confirm", suggestion: verdict.answer.canonical };
       // Re-read: the round may have been settled while the judge was thinking.
       const fresh = await loadAttempt(store, attempt.id);
       const freshRound = fresh.rounds[pt.i];

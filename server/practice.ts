@@ -115,7 +115,11 @@ export async function answer(body: Record<string, unknown>, deps: Deps): Promise
       // Each prompt attempt has its own token, so it doubles as the rate-limit key.
       const callerKey = `practice:${createHash("sha256").update(String(body.promptToken)).digest("hex").slice(0, 24)}`;
       const verdict = await judgeUnlisted({ prompt, raw, callerKey }, deps.judge ?? defaultJudgeDeps);
-      if (verdict.kind === "bank") return { status: "accepted", answer: revealAnswer(verdict.answer), reveal: revealFor(prompt) };
+      if (verdict.kind === "bank") {
+        // A bank answer worded differently: recommend it, never lock it unasked.
+        if (body.confirm !== true) return { status: "confirm", suggestion: verdict.answer.canonical };
+        return { status: "accepted", answer: revealAnswer(verdict.answer), reveal: revealFor(prompt) };
+      }
       if (verdict.kind === "accepted") {
         return { status: "accepted", answer: aiRevealAnswer(verdict.canonical, verdict.reference), reveal: revealFor(prompt) };
       }

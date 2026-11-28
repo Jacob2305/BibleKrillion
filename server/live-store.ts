@@ -4,7 +4,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { LivePhase } from "../lib/game/live-types.js";
+import type { LivePhase, LiveRevealView } from "../lib/game/live-types.js";
 import type { AnswerTier } from "../lib/game/scoring.js";
 import { isDeployed } from "./config.js";
 import { HttpError } from "./http.js";
@@ -29,6 +29,8 @@ export interface LiveRoom {
   endedAt: number | null;
   /** Host re-tiering for this room: promptId → canonical → tier. Applied wherever points are computed. */
   tierOverrides: TierOverrides;
+  /** Reveal phase: what the projector shows (the host picks). */
+  revealView: LiveRevealView;
 }
 
 export type TierOverrides = Record<string, Record<string, AnswerTier>>;
@@ -68,7 +70,7 @@ export interface LiveRoundRecord {
 }
 
 export type RoomPatch = Partial<
-  Pick<LiveRoom, "phase" | "roundIndex" | "promptIds" | "seconds" | "teams" | "openedAt" | "deadline" | "endedAt" | "tierOverrides">
+  Pick<LiveRoom, "phase" | "roundIndex" | "promptIds" | "seconds" | "teams" | "openedAt" | "deadline" | "endedAt" | "tierOverrides" | "revealView">
 >;
 
 export interface NewPlayer {
@@ -141,6 +143,7 @@ export class MemoryLiveStore implements LiveStore {
       createdAt: input.now,
       endedAt: null,
       tierOverrides: {},
+      revealView: "climb",
     };
     this.rooms.set(room.id, room);
     return structuredClone(room);
@@ -246,6 +249,8 @@ interface RoomRow {
   ended_at: string | null;
   /** Added by migration 0004 (absent before it runs). */
   tier_overrides?: TierOverrides | null;
+  /** Added by migration 0006 (absent before it runs). */
+  reveal_view?: LiveRevealView | null;
 }
 
 interface PlayerRow {
@@ -290,6 +295,7 @@ const toRoom = (r: RoomRow): LiveRoom => ({
   createdAt: Date.parse(r.created_at),
   endedAt: ms(r.ended_at),
   tierOverrides: r.tier_overrides ?? {},
+  revealView: r.reveal_view === "answers" ? "answers" : "climb",
 });
 
 const toPlayer = (p: PlayerRow): LivePlayer => ({
@@ -319,6 +325,9 @@ const toSubmission = (s: SubmissionRow): LiveSubmission => ({
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function fail(what: string, error: { message: string }): never {
+  if (/reveal_view/.test(error.message)) {
+    throw new HttpError(503, "Projector views need a database update: run supabase/migrations/0006_reveal_view.sql in the Supabase SQL Editor.", "migration");
+  }
   if (/tier_overrides|is_bot/.test(error.message)) {
     throw new HttpError(503, "Host tools need a database update: run supabase/migrations/0004_host_tools.sql in the Supabase SQL Editor.", "migration");
   }
@@ -380,6 +389,7 @@ export class SupabaseLiveStore implements LiveStore {
     if (patch.deadline !== undefined) row.deadline = iso(patch.deadline);
     if (patch.endedAt !== undefined) row.ended_at = iso(patch.endedAt);
     if (patch.tierOverrides !== undefined) row.tier_overrides = patch.tierOverrides;
+    if (patch.revealView !== undefined) row.reveal_view = patch.revealView;
     const { data, error } = await this.db.from("rooms").update(row).eq("id", id).eq("version", expectedVersion).select("*").maybeSingle();
     if (error) fail("rooms update", error);
     return data ? toRoom(data as RoomRow) : null;

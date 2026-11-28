@@ -320,6 +320,37 @@ function AllAnswers({ index, answers }: { index: number; answers: AnswersFor }) 
   );
 }
 
+/** What the projector shows after a reveal: the risen climb, every answer, or the leaderboard. */
+function ScreenView({ snap, busy, act }: { snap: LiveSnapshot; busy: LiveHostOp | null; act: Act }) {
+  const current = snap.phase === "leaderboard" ? "leaderboard" : (snap.view ?? "climb");
+  const options: { key: string; label: string; run: () => Promise<void> }[] = [
+    { key: "climb", label: "Climb", run: () => act("view", { view: "climb" }) },
+    { key: "answers", label: "All answers", run: () => act("view", { view: "answers" }) },
+    { key: "leaderboard", label: "Leaderboard", run: () => act("leaderboard") },
+  ];
+  return (
+    <div role="group" aria-label="Projector" className="grid grid-cols-3 gap-2">
+      {options.map((o) => {
+        const on = o.key === current;
+        return (
+          <button
+            key={o.key}
+            type="button"
+            aria-pressed={on}
+            disabled={busy !== null}
+            onClick={() => void (on ? undefined : o.run())}
+            className={`rounded-2xl px-3 py-3 text-base font-bold ring-2 focus-visible:ring-4 focus-visible:ring-white/70 focus-visible:outline-none disabled:opacity-60 ${
+              on ? "bg-sun-400 text-night-950 ring-sun-300" : "bg-white/10 text-cloud-50 ring-white/20 hover:bg-white/15"
+            }`}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function PhasePanel({
   snap,
   busy,
@@ -386,10 +417,8 @@ function PhasePanel({
             ))}
           </ul>
           <AllAnswers key={snap.roundIndex} index={snap.roundIndex} answers={answers} />
-          <div className="grid gap-3 sm:grid-cols-2">
-            <BigButton onClick={() => void act("leaderboard")}>{busy === "leaderboard" ? "…" : "Show leaderboard"}</BigButton>
-            {nextButton}
-          </div>
+          <ScreenView snap={snap} busy={busy} act={act} />
+          {nextButton}
         </Panel>
       );
     }
@@ -398,6 +427,7 @@ function PhasePanel({
       return (
         <Panel title={`Leaderboard after ${snap.roundIndex + 1} of ${snap.roundCount}`}>
           {snap.leaderboard && <Leaderboard rows={snap.leaderboard} limit={5} />}
+          <ScreenView snap={snap} busy={busy} act={act} />
           {nextButton}
         </Panel>
       );

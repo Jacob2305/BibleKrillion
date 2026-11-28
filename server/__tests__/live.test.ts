@@ -415,18 +415,18 @@ describe("test bots", () => {
     expect((await env.create({ bots: false })).data.snapshot.playerCount).toBe(0);
   });
 
-  it("answer each prompt, show as locked in only after their answer time, and score at the reveal", async () => {
+  it("lock a random answer the instant a prompt opens, and score at the reveal", async () => {
     const env = setup({ bots: 2 });
     const { data: room } = await env.create({ seconds: 30 });
     const ann = (await env.join(room.snapshot.code, "Ann")).data;
     const { data: started } = await env.hostOp(room.hostToken, "start");
-    expect(started.snapshot.answeredCount).toBe(0); // nobody yet at t = 0
     expect(started.host.players.find((p) => p.nickname === "Ann")!.bot).toBeUndefined();
 
     const roomId = (await env.store.findOpenRoom(room.snapshot.code, env.clock.t))!.id;
     const subs = await env.store.listSubmissions(roomId);
-    expect(subs.length).toBeGreaterThan(0); // stored as the prompt opens…
-    for (const s of subs) expect(s.ms).toBeGreaterThan(0); // …timed inside the window
+    expect(subs.length).toBeGreaterThan(0);
+    for (const s of subs) expect(s.ms).toBe(0); // locked as the prompt opens…
+    expect(started.snapshot.answeredCount).toBe(subs.length); // …and shown as locked in straight away
 
     env.clock.t += 30_000;
     expect((await env.stateOf(ann.playerToken)).data.snapshot.answeredCount).toBe(subs.length);
@@ -592,3 +592,40 @@ describe("teams", () => {
   });
 });
 
+
+describe("projector view after a reveal", () => {
+  it("starts on the climb; the host switches to the answers, the leaderboard, and back", async () => {
+    const env = setup();
+    const { room } = await startedRoom(env);
+    env.clock.t += 30_000;
+    const { data: revealed } = await env.hostOp(room.hostToken, "reveal");
+    expect(revealed.snapshot.view).toBe("climb");
+
+    const { data: answers } = await env.hostOp(room.hostToken, "view", { view: "answers" });
+    expect(answers.snapshot).toMatchObject({ phase: "reveal", view: "answers" });
+    expect(answers.snapshot.reveal).toBeDefined();
+
+    const { data: board } = await env.hostOp(room.hostToken, "leaderboard");
+    expect(board.snapshot.phase).toBe("leaderboard");
+    expect(board.snapshot.view).toBeUndefined();
+
+    const { data: back } = await env.hostOp(room.hostToken, "view", { view: "climb" });
+    expect(back.snapshot).toMatchObject({ phase: "reveal", view: "climb" });
+    expect(back.snapshot.reveal!.reveal.answers.length).toBeGreaterThan(0);
+
+    // The next reveal starts on the climb again.
+    await env.hostOp(room.hostToken, "view", { view: "answers" });
+    await env.hostOp(room.hostToken, "start");
+    env.clock.t += 30_000;
+    expect((await env.hostOp(room.hostToken, "reveal")).data.snapshot.view).toBe("climb");
+  });
+
+  it("only works after a reveal, with a known view", async () => {
+    const env = setup();
+    const { room } = await startedRoom(env);
+    expect((await env.hostOp(room.hostToken, "view", { view: "answers" })).status).toBe(409);
+    env.clock.t += 30_000;
+    await env.hostOp(room.hostToken, "reveal");
+    expect((await env.hostOp(room.hostToken, "view", { view: "podium" })).status).toBe(400);
+  });
+});

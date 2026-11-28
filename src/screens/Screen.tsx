@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { normalizeRoomCode } from "../../lib/game/live";
 import type { LiveSnapshot } from "../../lib/game/live-types";
+import type { RevealAnswer } from "../../lib/game/api-types";
 import { CLIMB_START } from "../../lib/game/climb";
 import { ANSWER_TIERS, TIER_INFO, type AnswerTier } from "../../lib/game/scoring";
 import { World, type WorldProps } from "../game/climb/Climb";
@@ -232,12 +233,15 @@ function QuestionScreen({ snap, deadline }: { snap: LiveSnapshot; deadline: numb
 const DEEPEST_FIRST = [...ANSWER_TIERS].reverse();
 
 function RevealScreen({ snap, climb }: { snap: LiveSnapshot; climb: StagedClimb }) {
+  // The host picks what the room sees after a reveal; the climb is the default.
+  return snap.view === "answers" ? <AnswerBoard snap={snap} /> : <ClimbView snap={snap} climb={climb} />;
+}
+
+/** Every answer, deepest tier first, plus what nobody said. Shown when the host picks "All answers". */
+function AnswerBoard({ snap }: { snap: LiveSnapshot }) {
   const r = snap.reveal!;
   const given = r.reveal.answers.filter((a) => r.counts[a.canonical]);
   const missed = r.reveal.answers.filter((a) => !r.counts[a.canonical]);
-  // Someone scored → the room climbs tier by tier first (see Projector). After the top stop has had
-  // its moment, every answer comes in over the zone the room reached.
-  if (given.length > 0 && climb.phase !== "done" && climb.phase !== "idle") return <ClimbStop snap={snap} climb={climb} />;
   let delay = 0;
   return (
     <div className="relative flex h-full min-h-0 flex-col gap-6">
@@ -251,7 +255,7 @@ function RevealScreen({ snap, climb }: { snap: LiveSnapshot; climb: StagedClimb 
       </div>
       {given.length === 0 && (
         <p className="pixel-panel mx-auto mt-[12vh] px-10 py-6 text-center text-5xl text-cloud-50/90">
-          {r.answered > 0 ? "Nobody found a right answer this time. The room stays at sea." : "Nobody locked in an answer."}
+          {r.answered > 0 ? "Nobody found a right answer this time." : "Nobody locked in an answer."}
         </p>
       )}
       <div className="min-h-0 flex-1 columns-3 gap-6 overflow-hidden">
@@ -297,66 +301,90 @@ function RevealScreen({ snap, climb }: { snap: LiveSnapshot; climb: StagedClimb 
   );
 }
 
-/** One stop of the room's climb: the prompt and altimeter up top, that tier's answers beside the tier line. */
-function ClimbStop({ snap, climb }: { snap: LiveSnapshot; climb: StagedClimb }) {
+/**
+ * The room's climb: the prompt and altimeter up top; as the world rises past each tier somebody
+ * reached, that tier's guesses (one box per distinct answer) float in beside it. Lower tiers shrink
+ * and fade as the room goes higher, and at the top it stays.
+ */
+function ClimbView({ snap, climb }: { snap: LiveSnapshot; climb: StagedClimb }) {
   const r = snap.reveal!;
-  const tier = climb.phase === "holding" ? climb.tier : null;
-  const answers = tier
-    ? r.reveal.answers.filter((a) => a.tier === tier && r.counts[a.canonical]).sort((a, b) => r.counts[b.canonical]! - r.counts[a.canonical]!)
-    : [];
-  const players = answers.reduce((n, a) => n + r.counts[a.canonical]!, 0);
-  const many = answers.length > 6;
+  const given = r.reveal.answers.filter((a) => r.counts[a.canonical]);
+  const stops = ANSWER_TIERS.filter((t) => given.some((a) => a.tier === t));
+  // Tiers the room has arrived at so far (the one being climbed to joins on arrival).
+  const arrived = climb.phase === "done" ? stops.length : climb.phase === "holding" ? climb.index + 1 : Math.max(0, climb.index);
+  const shown = stops.slice(0, arrived).reverse(); // newest (highest) first
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <div className="pixel-panel mx-auto max-w-[80%] px-10 py-4 text-center [text-shadow:3px_3px_0_rgb(0_0_0/0.55)]">
         <p className="text-2xl font-semibold tracking-widest text-sun-300 uppercase">
-          Prompt {snap.roundIndex + 1} of {snap.roundCount} · how high did the room climb?
+          Prompt {snap.roundIndex + 1} of {snap.roundCount}
         </p>
         <h1 className="font-display text-5xl leading-tight font-bold text-balance">{r.reveal.prompt}</h1>
         <p className="mt-1 font-mono text-4xl text-sun-300 tabular-nums" aria-hidden="true">
           ▲ <span ref={climb.meterRef}>0 m</span>
         </p>
       </div>
-      <div className="flex min-h-0 flex-1 items-center justify-end pt-6">
-        {tier && (
-          <section key={tier} role="status" className="climb-rise pixel-panel max-h-full w-[54%] overflow-hidden p-6">
-            <h2 className="climb-stamp mb-4 flex flex-wrap items-center gap-4">
-              <span className={`inline-flex items-center gap-3 px-6 py-2 text-5xl font-bold shadow-[6px_6px_0_rgba(0,0,0,0.45)] ${TIER_STYLE[tier].badge}`}>
-                <span aria-hidden="true">{TIER_INFO[tier].emoji}</span>
-                {TIER_INFO[tier].label}
-              </span>
-              <span className="text-3xl text-cloud-50/80">
-                +{TIER_INFO[tier].points} pts · {players} {players === 1 ? "climber" : "climbers"}
-              </span>
-            </h2>
-            <ul className={many ? "columns-2 gap-4" : "space-y-3"}>
-              {answers.map((a) => (
-                <li key={a.canonical} className={`mb-3 break-inside-avoid rounded-2xl border-2 bg-night-950/80 px-4 py-2 ${TIER_STYLE[tier].row}`}>
-                  <div className={`flex items-baseline justify-between gap-3 ${many ? "text-2xl" : "text-4xl"}`}>
-                    <span className="font-semibold">
-                      {a.canonical}
-                      {a.aiJudged && <span className="ml-3 text-xl text-sky-200">✨ AI judge</span>}
-                    </span>
-                    <span className="font-mono text-cloud-50/70 tabular-nums">×{r.counts[a.canonical]}</span>
-                  </div>
-                  {r.finders[a.canonical] && <p className="line-clamp-2 text-xl text-cloud-50/70">{r.finders[a.canonical]!.join(" · ")}</p>}
-                  {a.gemNote && <p className="mt-1 text-xl text-amber-100">💎 {a.gemNote}</p>}
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-      </div>
-      <button
-        type="button"
-        onClick={climb.skip}
-        aria-label="Skip to the top"
-        title="Skip to the top"
-        className="absolute right-0 bottom-0 rounded-xl px-3 py-1 text-base text-cloud-50/40 ring-2 ring-white/10 hover:text-cloud-50"
-      >
-        ⏭
-      </button>
+      {given.length === 0 ? (
+        <p className="pixel-panel mx-auto mt-[14vh] px-10 py-6 text-center text-5xl text-cloud-50/90">
+          {r.answered > 0 ? "Nobody found a right answer this time." : "Nobody locked in an answer."}
+        </p>
+      ) : (
+        <div role="status" className="ml-auto flex min-h-0 w-[46%] flex-1 flex-col items-end gap-4 overflow-hidden pt-6">
+          {shown.map((tier, i) => (
+            <FloatingTier key={tier} tier={tier} newest={i === 0} answers={given.filter((a) => a.tier === tier)} counts={r.counts} finders={r.finders} />
+          ))}
+        </div>
+      )}
+      {climb.phase !== "done" && given.length > 0 && (
+        <button
+          type="button"
+          onClick={climb.skip}
+          aria-label="Skip to the top"
+          title="Skip to the top"
+          className="absolute right-0 bottom-0 rounded-xl px-3 py-1 text-base text-cloud-50/40 ring-2 ring-white/10 hover:text-cloud-50"
+        >
+          ⏭
+        </button>
+      )}
     </div>
+  );
+}
+
+/** One tier's guesses as small floating boxes; older (lower) tiers shrink and fade. */
+function FloatingTier({
+  tier,
+  newest,
+  answers,
+  counts,
+  finders,
+}: {
+  tier: AnswerTier;
+  newest: boolean;
+  answers: readonly RevealAnswer[];
+  counts: Record<string, number>;
+  finders: Record<string, string[]>;
+}) {
+  const sorted = [...answers].sort((a, b) => (counts[b.canonical] ?? 0) - (counts[a.canonical] ?? 0) || a.canonical.localeCompare(b.canonical));
+  return (
+    <section className={`climb-rise flex max-w-full flex-col items-end gap-2 transition-opacity duration-700 ${newest ? "" : "opacity-60"}`}>
+      <TierBadge tier={tier} size="lg" />
+      <ul className="flex flex-wrap justify-end gap-2">
+        {sorted.map((a, i) => (
+          <li
+            key={a.canonical}
+            className={`animate-rise rounded-xl border-2 bg-night-950/90 px-3 py-1 shadow-[4px_4px_0_rgba(0,0,0,0.4)] ${TIER_STYLE[tier].row} ${newest ? "max-w-[34rem]" : "max-w-[22rem]"}`}
+            style={{ animationDelay: `${i * 90}ms` }}
+          >
+            <div className={`flex items-baseline gap-3 ${newest ? "text-3xl" : "text-xl"}`}>
+              <span className="truncate font-semibold">{a.canonical}</span>
+              <span className="shrink-0 font-mono text-cloud-50/70 tabular-nums">×{counts[a.canonical]}</span>
+            </div>
+            {newest && finders[a.canonical] && <p className="truncate text-lg text-cloud-50/70">{finders[a.canonical]!.join(" · ")}</p>}
+            {newest && a.gemNote && <p className="line-clamp-2 text-lg text-amber-100">💎 {a.gemNote}</p>}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -425,10 +453,12 @@ const DEMO_ANSWERS: { canonical: string; tier: AnswerTier; count: number; finder
 /** /dev/climb?room=1 (dev only): the projector's staged room climb with made-up answers. ?room=none: nobody scored. */
 export function ProjectorRevealDemo({ nobody = false }: { nobody?: boolean }) {
   const [run, setRun] = useState(0);
+  const [view, setView] = useState<"climb" | "answers">("climb");
   const answers = nobody ? [] : DEMO_ANSWERS;
   const snap = {
     code: "DEMO",
     phase: "reveal",
+    view,
     roundIndex: run,
     roundCount: 12,
     playerCount: 24,
@@ -454,9 +484,14 @@ export function ProjectorRevealDemo({ nobody = false }: { nobody?: boolean }) {
       <div className="flex h-full flex-col">
         <header className="flex items-center justify-between text-2xl text-cloud-50/70">
           <span className="font-display font-bold text-sun-300">{APP_NAME}</span>
-          <button type="button" className="rounded-xl px-3 py-1 text-base ring-2 ring-white/20" onClick={() => setRun((n) => n + 1)}>
-            Replay
-          </button>
+          <span className="flex gap-2">
+            <button type="button" className="rounded-xl px-3 py-1 text-base ring-2 ring-white/20" onClick={() => setView(view === "climb" ? "answers" : "climb")}>
+              {view === "climb" ? "All answers" : "Climb"}
+            </button>
+            <button type="button" className="rounded-xl px-3 py-1 text-base ring-2 ring-white/20" onClick={() => setRun((n) => n + 1)}>
+              Replay
+            </button>
+          </span>
         </header>
         <div className="min-h-0 flex-1 py-8">
           <RevealScreen key={run} snap={snap} climb={climb} />

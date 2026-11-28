@@ -86,7 +86,15 @@ export interface LiveSnapshot {
   teamBoard?: LiveTeamRow[];
   /** Team rooms: the teams players have made so far (for joining one on the phone). */
   teamNames?: string[];
+  /**
+   * Reveal phase: what the projector shows, chosen by the host. "climb" = the
+   * world risen to the highest tier anyone reached, with the guesses floating;
+   * "answers" = the full answer board. (The leaderboard is its own phase.)
+   */
+  view?: LiveRevealView;
 }
+
+export type LiveRevealView = "climb" | "answers";
 
 /** This phone's player. */
 export interface LiveMe {
@@ -182,6 +190,7 @@ export type LiveAnswerResponse =
 export type LiveHostOp =
   | "state"
   | "team"
+  | "view"
   | "settings"
   | "swap"
   | "start"

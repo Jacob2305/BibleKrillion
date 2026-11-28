@@ -52,6 +52,11 @@ for (const table of TABLES) {
   else ok("rooms/players have the host-tools columns");
 }
 {
+  const { error } = await server.from("rooms").select("reveal_view").limit(0);
+  if (error) bad("rooms has the projector-view column", `${error.message} — run supabase/migrations/0006_reveal_view.sql.`);
+  else ok("rooms has the projector-view column");
+}
+{
   const { error } = await server.from("answer_tiers").select("prompt_id, canonical, tier").limit(0);
   if (error) bad("answer_tiers exists (permanent tier changes)", `${error.message} — run supabase/migrations/0005_answer_tiers.sql.`);
   else ok("answer_tiers exists (permanent tier changes)");

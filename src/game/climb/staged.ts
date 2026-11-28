@@ -4,8 +4,9 @@
  * who got there, then glides on up to the next one. It never cuts.
  *
  * Phases: "ready" (a beat on the waves) → per stop: "climbing" → "holding"
- * → … → "done" (after the top stop has had its moment; the screen then shows
- * the full answer board). With no stops it goes straight to "done".
+ * → … → "done" (arrived at the top stop, and it stays there). With no stops
+ * it goes straight to "done". A round that has already climbed (e.g. the host
+ * showed the leaderboard, then went back) starts at the top, without replaying.
  */
 import { useCallback, useEffect, useRef, useState, type Ref } from "react";
 import { CLIMB_START, metersAtCamera, zoneIndex } from "../../../lib/game/climb";
@@ -30,7 +31,7 @@ export interface StagedClimb {
   tier: AnswerTier | null;
   world: WorldProps;
   meterRef: Ref<HTMLSpanElement>;
-  /** Jump straight to the top and the full board. */
+  /** Jump straight to the top. */
   skip: () => void;
 }
 
@@ -39,7 +40,6 @@ export function useStagedClimb({
   active,
   roundKey,
   holdMs,
-  finalMs = 3500,
 }: {
   /** Tiers somebody reached, lowest first. */
   stops: readonly AnswerTier[];
@@ -47,8 +47,6 @@ export function useStagedClimb({
   roundKey: string | number;
   /** How long to hold at a (non-final) stop. */
   holdMs: (tier: AnswerTier) => number;
-  /** How long the top stop stays before the full board. */
-  finalMs?: number;
 }): StagedClimb {
   const [phase, setPhase] = useState<StagedPhase>("idle");
   const [index, setIndex] = useState(-1);
@@ -63,7 +61,11 @@ export function useStagedClimb({
   stopsRef.current = stops;
   const holdRef = useRef(holdMs);
   holdRef.current = holdMs;
+  const roundKeyRef = useRef(roundKey);
+  roundKeyRef.current = roundKey;
   const lastZone = useRef(-1);
+  /** The round whose climb has played, so coming back to it starts at the top. */
+  const played = useRef<string | number | null>(null);
 
   const clearTimers = () => {
     timers.current.forEach(clearTimeout);
@@ -96,6 +98,15 @@ export function useStagedClimb({
       setCamera({ target: CLIMB_START, instant: true });
       return;
     }
+    if (played.current === roundKey) {
+      const last = stopsRef.current.length - 1;
+      state.current = { phase: "done", index: last };
+      setPhase("done");
+      setIndex(last);
+      // Glide straight back up (never cut); the stops already played.
+      setCamera({ target: zoneIndex(stopsRef.current[last]!), instant: false, durationMs: 1400 });
+      return;
+    }
     setPhase("ready");
     setIndex(-1);
     setCamera({ target: CLIMB_START, instant: true });
@@ -108,12 +119,18 @@ export function useStagedClimb({
     if (p !== "climbing") return;
     const list = stopsRef.current;
     const tier = list[i]!;
-    state.current = { phase: "holding", index: i };
-    setPhase("holding");
     playSfx({ name: "land", tier });
-    if (i + 1 < list.length) later(() => goTo(i + 1), holdRef.current(tier));
-    else later(() => setPhase("done"), finalMs);
-  }, [goTo, finalMs]);
+    if (i + 1 < list.length) {
+      state.current = { phase: "holding", index: i };
+      setPhase("holding");
+      later(() => goTo(i + 1), holdRef.current(tier));
+    } else {
+      // The top: the room stays here.
+      state.current = { phase: "done", index: i };
+      setPhase("done");
+      played.current = roundKeyRef.current;
+    }
+  }, [goTo]);
 
   const onFrame = useCallback((c: number) => {
     if (meterRef.current) meterRef.current.textContent = `${metersAtCamera(c).toLocaleString("en-US")} m`;
@@ -129,6 +146,7 @@ export function useStagedClimb({
     if (list.length === 0) return;
     clearTimers();
     const last = list.length - 1;
+    played.current = roundKeyRef.current;
     state.current = { phase: "done", index: last };
     setIndex(last);
     setPhase("done");

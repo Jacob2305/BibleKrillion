@@ -18,8 +18,7 @@ export function SuggestionLine({ suggestion, text, id }: { suggestion: Suggestio
     <p id={id} role="status" className="min-h-6 text-sm leading-snug">
       {showing && (
         <>
-          Did you mean <strong className="text-base text-sun-300">{suggestion.canonical}</strong>?{" "}
-          <span className="text-cloud-50/75">Enter to confirm, or edit it.</span>
+          Did you mean <strong className="text-base text-sun-300">{suggestion.canonical}</strong>?
         </>
       )}
     </p>

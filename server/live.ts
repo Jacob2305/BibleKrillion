@@ -267,6 +267,7 @@ export function buildSnapshot(room: LiveRoom, players: readonly LivePlayer[], al
     }
     reveal.answers = retierReveal(room, index, [...reveal.answers, ...aiAnswers.values()]);
     snapshot.reveal = { reveal, counts, finders, answered, players: active.length };
+    snapshot.view = room.revealView;
   }
   return snapshot;
 }
@@ -523,8 +524,19 @@ export async function host(body: Record<string, unknown>, deps: LiveDeps): Promi
       const wait = (room.deadline ?? now) + SUBMIT_GRACE_MS - deps.now();
       if (wait > 0) await deps.sleep(wait);
       now = deps.now();
-      await change({ phase: "reveal" });
+      // Each reveal starts on the climb. Only written when it changes, so rooms work before migration 0006.
+      await change(room.revealView === "climb" ? { phase: "reveal" } : { phase: "reveal", revealView: "climb" });
       await store.markRevealed(room.id, room.roundIndex, now);
+      break;
+    }
+
+    case "view": {
+      // The host picks what the projector shows after a reveal: the climb or the answer board
+      // (also the way back from the leaderboard).
+      requirePhase("reveal", "leaderboard");
+      const view = body.view;
+      if (view !== "climb" && view !== "answers") throw new HttpError(400, "Show the climb or the answers?");
+      await change(view === room.revealView ? { phase: "reveal" } : { phase: "reveal", revealView: view });
       break;
     }
 
@@ -699,6 +711,8 @@ export async function answer(body: Record<string, unknown>, deps: LiveDeps): Pro
         await logRejectedAnswer({ promptId: prompt.id, raw, reason: "not_in_bank", mode: "live" });
         return { status: "rejected", message: judgeRejectionMessage(verdict.reason, LIVE_MESSAGES.rejected) };
       }
+      // The judge recognised a bank answer worded differently: recommend it, never lock it unasked.
+      if (verdict.kind === "bank" && body.confirm !== true) return { status: "confirm", suggestion: verdict.answer.canonical };
       // The judge can take a few seconds: make sure the prompt was not revealed meanwhile.
       const fresh = await loadRoom(store, room.id);
       if (fresh.phase !== "question" || fresh.roundIndex !== room.roundIndex || !isOpen(fresh, deps.now())) {

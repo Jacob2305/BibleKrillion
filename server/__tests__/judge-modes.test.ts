@@ -69,6 +69,19 @@ describe("Practice", () => {
     expect(data).toMatchObject({ status: "accepted", answer: { canonical: AI_ANSWER, tier: "deep_cut", points: 85, reference: "Genesis 1:1", aiJudged: true } });
   });
 
+  it("when the AI recognises a bank answer worded differently, it recommends it first", async () => {
+    const clock = { t: T0 };
+    const target = bankAnswer(open.id);
+    const judge = judgeDeps(clock, () => ({ ...VALID, canonical: target }));
+    const handler = createPracticeHandler({ now: () => clock.t, random: Math.random, judge: judge.deps });
+    const promptToken = signToken({ k: "practice-prompt", pid: open.id, i: 0, dl: T0 + 25_000 });
+    const asked = await call<AnswerResponse>(handler, { action: "answer", promptToken, text: "zz testperson" });
+    expect(asked.data).toEqual({ status: "confirm", suggestion: target });
+    const yes = await call<AnswerResponse>(handler, { action: "answer", promptToken, text: "zz testperson", confirm: true });
+    expect(yes.data).toMatchObject({ status: "accepted", answer: { canonical: target } });
+    expect(judge.calls).toHaveLength(1); // the resend uses the cached ruling
+  });
+
   it("never asks the AI about closed-set prompts", async () => {
     const clock = { t: T0 };
     const judge = judgeDeps(clock);
@@ -114,6 +127,30 @@ describe("Daily", () => {
   });
 });
 
+describe("Daily: AI-recognised bank answers", () => {
+  it("are recommended first, then locked on confirm", async () => {
+    const clock = { t: T0 };
+    const ids = dailyPromptIds(dayKey(T0));
+    const aiIndex = ids.findIndex((id) => !getPrompt(id)!.closed_set);
+    const target = bankAnswer(ids[aiIndex]!);
+    const judge = judgeDeps(clock, () => ({ ...VALID, canonical: target }));
+    const store = new MemoryDailyStore();
+    const handler = createDailyHandler({ now: () => clock.t, store: () => store, judge: judge.deps });
+    const { data: start } = await call<DiveStartResponse>(handler, { action: "start", deviceId: "device-judge-02", nickname: "Jo" });
+    for (let i = 0; i <= aiIndex; i++) {
+      const { data: b } = await call<PromptBeginResponse>(handler, { action: "begin", dive: start.dive, index: i });
+      if (i < aiIndex) {
+        await call<AnswerResponse>(handler, { action: "answer", promptToken: b.promptToken, text: bankAnswer(ids[i]!) });
+        continue;
+      }
+      const asked = await call<AnswerResponse>(handler, { action: "answer", promptToken: b.promptToken, text: "zz testperson" });
+      expect(asked.data).toEqual({ status: "confirm", suggestion: target });
+      const yes = await call<AnswerResponse>(handler, { action: "answer", promptToken: b.promptToken, text: "zz testperson", confirm: true });
+      expect(yes.data).toMatchObject({ status: "accepted", answer: { canonical: target } });
+    }
+  });
+});
+
 describe("Live rooms", () => {
   async function liveSetup(verdict?: (answer: string) => Verdict | Promise<Verdict>) {
     const clock = { t: T0 };
@@ -131,7 +168,7 @@ describe("Live rooms", () => {
     await call(handler, { action: "host", hostToken: room.hostToken, op: "start" });
     const host = (op: string, extra: Record<string, unknown> = {}) => call<LiveHostResponse>(handler, { action: "host", hostToken: room.hostToken, op, ...extra });
     const answer = (token: string, text: string) => call<LiveAnswerResponse>(handler, { action: "answer", playerToken: token, index: 0, text });
-    return { clock, judge, store, room, ann, bo, host, answer };
+    return { clock, judge, store, room, ann, bo, host, answer, handler };
   }
 
   it("locks an AI answer, shows it at the reveal with the host's review panel", async () => {
@@ -147,6 +184,15 @@ describe("Live rooms", () => {
     const { data: approved } = await env.host("ai_approve", { roundIndex: 0, canonical: AI_ANSWER });
     expect(approved.host.aiAnswers[0]!.status).toBe("approved");
     expect(approved.snapshot.leaderboard![0]!.total).toBe(85);
+  });
+
+  it("an AI-recognised bank answer is recommended first, then locked on confirm", async () => {
+    let env!: Awaited<ReturnType<typeof liveSetup>>;
+    env = await liveSetup(() => ({ ...VALID, canonical: bankAnswer(env.room.host.prompts[0]!.id) }));
+    const target = bankAnswer(env.room.host.prompts[0]!.id);
+    expect((await env.answer(env.ann.playerToken, "zz testperson")).data).toEqual({ status: "confirm", suggestion: target });
+    const { data } = await call<LiveAnswerResponse>(env.handler, { action: "answer", playerToken: env.ann.playerToken, index: 0, text: "zz testperson", confirm: true });
+    expect(data).toEqual({ status: "locked", index: 0, canonical: target });
   });
 
   it("a host rejecting an AI answer takes the points away in the room", async () => {

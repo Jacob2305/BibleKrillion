@@ -509,6 +509,7 @@ export function RevealHud({
   actions,
   topClass = "pt-16",
   hideLanding = false,
+  hideClimber = false,
 }: {
   climb: RevealClimb;
   /** Small line above the headline, e.g. "Your answer". */
@@ -525,6 +526,11 @@ export function RevealHud({
   topClass?: string;
   /** Hide everything but the world (the projector does this to show the answers). */
   hideLanding?: boolean;
+  /**
+   * No dove in the middle (live-room phones): the tier badge and points then sit
+   * straight under the answer panel, so long notes never run into anything.
+   */
+  hideClimber?: boolean;
 }) {
   const { phase, tier, size, meterRef, skip, exploring } = climb;
   if (phase === "idle" || hideLanding) return null;
@@ -533,6 +539,24 @@ export function RevealHud({
   const landed = phase === "landed";
   const impact = IMPACT[tier];
   const info = TIER_INFO[tier];
+  // Tier badge, points and notes once landed.
+  const result = (
+    <>
+      <div className="climb-stamp inline-block">
+        <span
+          className={`inline-flex items-center gap-3 font-bold whitespace-nowrap shadow-[6px_6px_0_rgba(0,0,0,0.45)] [text-shadow:none] ${TIER_STYLE[tier].badge} ${stage ? "px-10 py-3 text-6xl" : "px-6 py-2 text-4xl"}`}
+        >
+          <span aria-hidden="true">{info.emoji}</span>
+          {info.label}
+        </span>
+      </div>
+      <div className={`climb-rise pixel-panel mx-auto mt-4 w-fit max-w-md ${stage ? "px-10 py-4" : "px-5 py-2"}`}>
+        <p className={`font-mono text-cloud-50 tabular-nums ${stage ? "text-5xl" : "text-3xl"}`}>+{info.points} pts</p>
+        {caption && <p className={`text-cloud-50/90 ${stage ? "text-4xl" : "text-xl"}`}>{caption}</p>}
+        {details && <div className="mt-1 space-y-1 text-base">{details}</div>}
+      </div>
+    </>
+  );
   return (
     <div
       className={`climb fixed inset-0 z-30 select-none ${landed && tier === "one_in_a_million" ? "climb-quake" : ""} ${landed ? "pointer-events-none" : ""}`}
@@ -551,9 +575,15 @@ export function RevealHud({
               ▲ <span ref={meterRef}>{formatMeters(landed ? climbTarget(tier) : CLIMB_START)}</span>
             </p>
           </div>
+          {hideClimber && landed && (
+            <div className="mt-4" role="status">
+              {result}
+            </div>
+          )}
         </div>
 
         {/* the climber, always in the middle of the screen */}
+        {!hideClimber && (
         <div
           aria-hidden="true"
           className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
@@ -581,6 +611,7 @@ export function RevealHud({
             </div>
           </div>
         </div>
+        )}
 
         {landed && (
           <>
@@ -600,21 +631,11 @@ export function RevealHud({
               <Sparks count={impact.sparks} color={impact.color} up={miss} />
               <div className="climb-ring absolute top-1/2 left-1/2" style={{ borderColor: impact.color }} />
             </div>
-            <div className={`pointer-events-none absolute inset-x-0 px-4 text-center ${stage ? "top-[62%]" : "top-[57%]"}`} role="status">
-              <div className="climb-stamp inline-block">
-                <span
-                  className={`inline-flex items-center gap-3 font-bold whitespace-nowrap shadow-[6px_6px_0_rgba(0,0,0,0.45)] [text-shadow:none] ${TIER_STYLE[tier].badge} ${stage ? "px-10 py-3 text-6xl" : "px-6 py-2 text-4xl"}`}
-                >
-                  <span aria-hidden="true">{info.emoji}</span>
-                  {info.label}
-                </span>
+            {!hideClimber && (
+              <div className={`pointer-events-none absolute inset-x-0 px-4 text-center ${stage ? "top-[62%]" : "top-[57%]"}`} role="status">
+                {result}
               </div>
-              <div className={`climb-rise pixel-panel mx-auto mt-4 w-fit max-w-md ${stage ? "px-10 py-4" : "px-5 py-2"}`}>
-                <p className={`font-mono text-cloud-50 tabular-nums ${stage ? "text-5xl" : "text-3xl"}`}>+{info.points} pts</p>
-                {caption && <p className={`text-cloud-50/90 ${stage ? "text-4xl" : "text-xl"}`}>{caption}</p>}
-                {details && <div className="mt-1 space-y-1 text-base">{details}</div>}
-              </div>
-            </div>
+            )}
           </>
         )}
       </div>

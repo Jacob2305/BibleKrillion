@@ -3,10 +3,9 @@ import { normalizeRoomCode } from "../../lib/game/live";
 import type { RevealAnswer } from "../../lib/game/api-types";
 import type { LiveMe, LiveSnapshot } from "../../lib/game/live-types";
 import { APP_NAME } from "../../lib/game/brand";
-import { AnswersSheet, RevealHud, World, useRevealClimb, type RevealClimb } from "../game/climb/Climb";
+import { RevealHud, World, useRevealClimb, type RevealClimb } from "../game/climb/Climb";
 import { SkyPage } from "../game/Sky";
 import { BigButton } from "../game/DivePlayer";
-import { RevealList } from "../game/RevealList";
 import { SuggestionLine, suggestionShowing } from "../game/Suggestion";
 import type { Suggestion } from "../game/useDive";
 import { TimerBar } from "../game/TimerBar";
@@ -104,6 +103,27 @@ function JoinForm({ notice, onJoined }: { notice: string | null; onJoined: (code
     };
   }, [normalized, room?.code]);
 
+  // New teams appear for everyone still on this form (a light poll while it's open).
+  const teamRoom = room?.teams ? room.code : null;
+  useEffect(() => {
+    if (!teamRoom) return;
+    let live = true;
+    const timer = window.setInterval(() => {
+      liveApi
+        .stateByCode(teamRoom)
+        .then((res) => {
+          if (!live) return;
+          const teamNames = res.snapshot.teamNames ?? [];
+          setRoom((r) => (r && r.code === teamRoom ? { ...r, teams: res.snapshot.teams, teamNames } : r));
+        })
+        .catch(() => {}); // a missed refresh is fine; the next one tries again
+    }, 3000);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, [teamRoom]);
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!normalized) return setCodeError("Room codes are 4 letters. Check the big screen.");
@@ -131,7 +151,6 @@ function JoinForm({ notice, onJoined }: { notice: string | null; onJoined: (code
     <form onSubmit={submit} className="pixel-panel space-y-6 p-5">
       <div className="space-y-2">
         <h1 className="font-display text-4xl font-bold">Join a live ascent</h1>
-        <p className="text-lg text-cloud-50/80">Enter the code on the big screen.</p>
         {notice && (
           <p role="alert" className="rounded-xl bg-amber-900/40 px-3 py-2 text-amber-100 ring-2 ring-amber-300/30">
             {notice}
@@ -162,7 +181,7 @@ function JoinForm({ notice, onJoined }: { notice: string | null; onJoined: (code
           className={`${input} text-center font-logo text-3xl tracking-[0.5em] uppercase`}
         />
         <p id="room-code-help" className={`text-sm ${codeError ? "text-amber-200" : "text-cloud-50/50"}`}>
-          {codeError ?? "4 letters, no vowels."}
+          {codeError}
         </p>
       </div>
 
@@ -249,7 +268,7 @@ function JoinForm({ notice, onJoined }: { notice: string | null; onJoined: (code
           className={input}
         />
         <p id="live-nickname-help" className={`text-sm ${nameError ? "text-amber-200" : "text-cloud-50/50"}`}>
-          {nameError ?? "This shows on the big screen, so keep it friendly."}
+          {nameError}
         </p>
       </div>
 
@@ -285,6 +304,12 @@ function PlayerRoom({ seat, onLeave }: { seat: Seat; onLeave: (message: string) 
   const teamRow = myTeam ? snap?.teamBoard?.find((t) => t.team.toLowerCase() === myTeam.toLowerCase()) : undefined;
   if (teamRow) lastTeamAverage.current = teamRow.average;
   else if (!myTeam) lastTeamAverage.current = null;
+  // Places for the small line at the bottom, also kept between boards.
+  const lastPlace = useRef<{ rank: number; of: number } | null>(null);
+  if (myRow && snap?.leaderboard) lastPlace.current = { rank: myRow.rank, of: snap.leaderboard.length };
+  const lastTeamPlace = useRef<{ rank: number; of: number } | null>(null);
+  if (teamRow && snap?.teamBoard) lastTeamPlace.current = { rank: teamRow.rank, of: snap.teamBoard.length };
+  else if (!myTeam) lastTeamPlace.current = null;
 
   const kicked = removed || !!me?.kicked || (!!me && !!snap?.removed.includes(me.id));
   // This prompt's locked answer: from this session, or remembered by the server after a refresh.
@@ -314,7 +339,6 @@ function PlayerRoom({ seat, onLeave }: { seat: Seat; onLeave: (message: string) 
     body = (
       <Card>
         <p className="text-2xl font-bold">You've been removed from this room.</p>
-        <p className="mt-2 text-cloud-50/70">If that's a mistake, ask the host.</p>
       </Card>
     );
   } else if (snap.phase === "lobby") {
@@ -334,7 +358,7 @@ function PlayerRoom({ seat, onLeave }: { seat: Seat; onLeave: (message: string) 
       />
     );
   } else if (snap.phase === "reveal") {
-    body = <MyReveal snap={snap} me={me} answer={myAnswer} climb={climb} connection={<ConnectionNote connection={room.connection} error={room.error} />} />;
+    body = <MyReveal snap={snap} answer={myAnswer} climb={climb} />;
   } else if (snap.phase === "leaderboard") {
     body = <Standings snap={snap} me={me} />;
   } else {
@@ -346,7 +370,7 @@ function PlayerRoom({ seat, onLeave }: { seat: Seat; onLeave: (message: string) 
       <World
         {...climb.world}
         explore={!kicked && (snap.phase === "lobby" || (revealing && climb.phase === "landed"))}
-        backClass={revealing ? "bottom-40" : "bottom-6"}
+        backClass="bottom-10"
       />
       <main className="relative z-10 mx-auto max-w-xl px-4 pt-4 pb-16">
         <header className="pixel-panel mb-5 px-3 py-2 text-sm">
@@ -372,12 +396,24 @@ function PlayerRoom({ seat, onLeave }: { seat: Seat; onLeave: (message: string) 
           <p className="mb-4 rounded-xl bg-night-950/85 px-3 py-2 text-cloud-50/80">The host has ended this room. Thanks for diving!</p>
         )}
         {body}
-        {!revealing && (
-          <div className="mt-6 text-center">
-            <ConnectionNote connection={room.connection} error={room.error} />
-          </div>
-        )}
       </main>
+      {!kicked && snap.phase !== "lobby" && (lastPlace.current || (snap.teams && myTeam && lastTeamPlace.current)) && (
+        <p className="fixed inset-x-0 bottom-0 z-40 pb-[max(0.5rem,env(safe-area-inset-bottom))] text-center text-xs text-cloud-50/70 [text-shadow:1px_1px_0_rgb(0_0_0/0.7)]">
+          {lastPlace.current && (
+            <span>
+              #{lastPlace.current.rank} of {lastPlace.current.of}
+            </span>
+          )}
+          {snap.teams && myTeam && lastTeamPlace.current && (
+            <span>
+              {lastPlace.current && " · "}Team {myTeam} #{lastTeamPlace.current.rank} of {lastTeamPlace.current.of}
+            </span>
+          )}
+        </p>
+      )}
+      <div className="fixed inset-x-0 bottom-6 z-40 text-center">
+        <ConnectionNote connection={room.connection} error={room.error} />
+      </div>
     </div>
   );
 }
@@ -392,7 +428,9 @@ function Lobby({ me, snap }: { me: LiveMe; snap: LiveSnapshot }) {
       </p>
       <p className="mt-3 text-3xl font-bold">You're in, {me.nickname}!</p>
       {team && <p className="mt-1 text-cloud-50/70">Team {team}</p>}
-      <p className="mt-4 text-lg text-cloud-50/80">Look up at the big screen. The ascent starts soon.</p>
+      {snap.teams && snap.teamNames && snap.teamNames.length > 0 && (
+        <p className="mt-3 text-sm text-cloud-50/60">Teams: {snap.teamNames.join(" · ")}</p>
+      )}
       <p className="mt-2 text-cloud-50/60" aria-live="polite">
         {snap.playerCount} {snap.playerCount === 1 ? "climber" : "climbers"} in the room · {snap.roundCount} prompts · {snap.seconds}s each
       </p>
@@ -512,7 +550,7 @@ function Answering({
       </form>
       <p id="live-feedback" aria-live="polite" className="min-h-6">
         {timeUp ? (
-          <span className="text-cloud-50/80">⏱ Time's up! Eyes on the big screen.</span>
+          <span className="text-cloud-50/80">⏱ Time's up!</span>
         ) : busy ? (
           <span className="text-cloud-50/70">{slow ? "Asking the judge…" : "Checking…"}</span>
         ) : feedback ? (
@@ -533,62 +571,28 @@ function Locked({ canonical, snap }: { canonical: string; snap: LiveSnapshot }) 
       <p className="text-sm text-cloud-50/60">{snap.question?.prompt.prompt}</p>
       <p className="mt-4 text-sm font-semibold tracking-widest text-sun-300/80 uppercase">🔒 Locked in</p>
       <p className="mt-1 font-display text-4xl font-bold">{canonical}</p>
-      <p className="mt-4 text-cloud-50/70">How high did it go? Find out at the reveal.</p>
     </Card>
   );
 }
 
-/** The reveal stays where the climb landed; every answer is one tap away. The host moves the room on. */
-function MyReveal({
-  snap,
-  me,
-  answer,
-  climb,
-  connection,
-}: {
-  snap: LiveSnapshot;
-  me: LiveMe;
-  answer: RevealAnswer | undefined;
-  climb: RevealClimb;
-  connection: ReactNode;
-}) {
-  const reveal = snap.reveal!;
-  const row = snap.leaderboard?.find((r) => r.id === me.id);
-  const [showAnswers, setShowAnswers] = useState(false);
+/** The reveal stays where the climb landed. Kept minimal: the big screen shows the answers. */
+function MyReveal({ snap, answer, climb }: { snap: LiveSnapshot; answer: RevealAnswer | undefined; climb: RevealClimb }) {
   return (
-    <>
-      <RevealHud
-        climb={climb}
-        kicker={answer ? "Your answer" : snap.question?.prompt.prompt}
-        headline={answer ? answer.canonical : "No answer this time"}
-        caption={row ? `You're #${row.rank} of ${snap.playerCount} at ${metersOf(row.total)}` : undefined}
-        details={
+    <RevealHud
+      climb={climb}
+      hideClimber
+      topClass="pt-24"
+      kicker={answer ? "Your answer" : snap.question?.prompt.prompt}
+      headline={answer ? answer.canonical : "No answer this time"}
+      details={
+        (answer?.gemNote || answer?.aiJudged) && (
           <>
             {answer?.gemNote && <p className="text-amber-100">💎 {answer.gemNote}</p>}
-            {answer?.aiJudged && <p className="text-sky-200">✨ Not in our list, but the AI judge accepted it: {answer.reference}</p>}
+            {answer?.aiJudged && <p className="text-sky-200">✨ Accepted by the AI judge: {answer.reference}</p>}
           </>
-        }
-        actions={
-          <>
-            <button
-              type="button"
-              onClick={() => setShowAnswers(true)}
-              className="pixel-button w-full bg-sun-400 px-6 py-4 text-xl font-bold text-night-950 hover:bg-sun-300 focus-visible:outline-4 focus-visible:outline-offset-4 focus-visible:outline-white"
-            >
-              See all answers
-            </button>
-            <p className="text-center text-cloud-50/70 [text-shadow:2px_2px_0_rgb(0_0_0/0.6)]">Look up: the host starts the next prompt.</p>
-            <div className="text-center">{connection}</div>
-          </>
-        }
-      />
-      <AnswersSheet open={showAnswers} title="Every answer in the bank" onClose={() => setShowAnswers(false)}>
-        <p className="mb-4 text-cloud-50/70">
-          {snap.question?.prompt.prompt} · {reveal.answered} of {reveal.players} answered
-        </p>
-        <RevealList reveal={reveal.reveal} mine={answer?.canonical ?? null} counts={reveal.counts} />
-      </AnswersSheet>
-    </>
+        )
+      }
+    />
   );
 }
 

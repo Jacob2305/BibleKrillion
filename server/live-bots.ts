@@ -38,7 +38,7 @@ export function botPick(prompt: BankPrompt, random: () => number): BankAnswer | 
   return pool[Math.floor(random() * pool.length)] ?? null;
 }
 
-/** When a prompt opens: store each active bot's answer, timed somewhere inside the window. */
+/** When a prompt opens: each active bot locks a random answer straight away. */
 export async function botsAnswer(
   store: LiveStore,
   room: LiveRoom,
@@ -46,12 +46,9 @@ export async function botsAnswer(
   prompt: BankPrompt,
   random: () => number,
 ): Promise<void> {
-  const windowMs = room.seconds * 1000;
   for (const bot of players.filter((p) => p.bot && !p.kicked)) {
     const pick = botPick(prompt, random);
     if (!pick) continue;
-    // Between 15% and 85% of the way through the timer.
-    const ms = Math.round(windowMs * (0.15 + random() * 0.7));
     await store.addSubmission({
       roomId: room.id,
       roundIndex: room.roundIndex,
@@ -60,7 +57,7 @@ export async function botsAnswer(
       canonical: pick.canonical,
       tier: pick.tier,
       points: pointsForTier(pick.tier),
-      ms,
+      ms: 0,
       ai: false,
       reference: null,
     });
