@@ -84,6 +84,8 @@ export interface LiveSnapshot {
   /** Reveal, leaderboard and final phases: every player, best first. */
   leaderboard?: LiveLeaderRow[];
   teamBoard?: LiveTeamRow[];
+  /** Team rooms: the teams players have made so far (for joining one on the phone). */
+  teamNames?: string[];
 }
 
 /** This phone's player. */
@@ -179,6 +181,7 @@ export type LiveAnswerResponse =
 
 export type LiveHostOp =
   | "state"
+  | "team"
   | "settings"
   | "swap"
   | "start"

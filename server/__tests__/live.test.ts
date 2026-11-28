@@ -550,3 +550,45 @@ describe("host answer list and re-tiering", () => {
     expect((await env.hostOp(room.hostToken, "retier", { index: 0, canonical: "x", tier: "legendary" })).status).toBe(400);
   });
 });
+
+describe("teams", () => {
+  it("players make or join teams; matching names join the same team; the snapshot lists them", async () => {
+    const env = setup();
+    const { data: room } = await env.create({ teams: true });
+    await env.join(room.snapshot.code, "Ann", "Table 4");
+    const { data: bo } = await env.join(room.snapshot.code, "Bo", "table 4 ");
+    expect(bo.me.team).toBe("Table 4");
+    const { data: cy } = await env.join(room.snapshot.code, "Cy", "Fishers");
+    expect(cy.snapshot.teamNames).toEqual(["Fishers", "Table 4"]);
+  });
+
+  it("bots play as their own team in team rooms", async () => {
+    const env = setup({ bots: 2 });
+    const { data: room } = await env.create({ teams: true });
+    expect(room.host.players.filter((p) => p.bot).map((p) => p.team)).toEqual(["Bots", "Bots"]);
+  });
+
+  it("the host can move a player to another team, a new team, or none, and the team board follows", async () => {
+    const env = setup();
+    const { room, players, promptIds } = await startedRoom(env, { teams: true });
+    const ann = players[0]!;
+    const easy = answerFor(promptIds[0]!, "plankton");
+    await env.answer(ann.playerToken, 0, easy.text);
+
+    await env.hostOp(room.hostToken, "team", { playerId: ann.me.id, team: "Bo team" });
+    const { data: moved } = await env.hostOp(room.hostToken, "team", { playerId: players[2]!.me.id, team: "Brand New" });
+    expect(moved.host.players.find((p) => p.id === ann.me.id)!.team).toBe("Bo team");
+    expect(moved.snapshot.teamNames).toEqual(["Bo team", "Brand New"]);
+
+    env.clock.t += 30_000;
+    const { data } = await env.hostOp(room.hostToken, "reveal");
+    const bo = data.snapshot.teamBoard!.find((t) => t.team === "Bo team")!;
+    expect(bo.members).toBe(2);
+    expect(bo.total).toBe(easy.points);
+
+    const { data: none } = await env.hostOp(room.hostToken, "team", { playerId: ann.me.id, team: null });
+    expect(none.host.players.find((p) => p.id === ann.me.id)!.team).toBeNull();
+    expect((await env.hostOp(room.hostToken, "team", { playerId: "nobody", team: "X" })).status).toBe(404);
+  });
+});
+

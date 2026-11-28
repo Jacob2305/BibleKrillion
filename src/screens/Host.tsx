@@ -485,6 +485,9 @@ function Settings({ snap, act }: { snap: LiveSnapshot; act: Act }) {
   );
 }
 
+/** The "New team…" entry in a player's team menu. */
+const NEW_TEAM = "__new_team__";
+
 function Players({ snap, host, act }: { snap: LiveSnapshot; host: LiveHostInfo; act: Act }) {
   const active = host.players.filter((p) => !p.kicked);
   const removed = host.players.filter((p) => p.kicked);
@@ -504,8 +507,32 @@ function Players({ snap, host, act }: { snap: LiveSnapshot; host: LiveHostInfo; 
             <span className={`min-w-0 flex-1 truncate ${p.kicked ? "line-through" : ""}`}>
               {p.nickname}
               {p.bot && <span className="ml-2 text-xs text-cloud-50/50">bot</span>}
-              {p.team && <span className="ml-2 text-xs text-cloud-50/50">{p.team}</span>}
+              {!snap.teams && p.team && <span className="ml-2 text-xs text-cloud-50/50">{p.team}</span>}
             </span>
+            {snap.teams && !p.kicked && (
+              <select
+                aria-label={`Team for ${p.nickname}`}
+                value={p.team ?? ""}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value === NEW_TEAM) {
+                    const name = window.prompt(`New team for ${p.nickname}:`)?.trim();
+                    if (name) void act("team", { playerId: p.id, team: name });
+                  } else {
+                    void act("team", { playerId: p.id, team: value || null });
+                  }
+                }}
+                className="max-w-36 rounded-lg bg-night-900 px-2 py-1 text-xs ring-2 ring-white/20"
+              >
+                <option value="">No team</option>
+                {[...new Set([...(snap.teamNames ?? []), ...(p.team ? [p.team] : [])])].map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+                <option value={NEW_TEAM}>New team…</option>
+              </select>
+            )}
             <button
               type="button"
               onClick={() => {

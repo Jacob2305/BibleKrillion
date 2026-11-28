@@ -69,11 +69,17 @@ export default function Join() {
 
 // ───────────────────────── joining ─────────────────────────
 
+/** The "+ New team" choice in the team picker. */
+const NEW_TEAM = "__new_team__";
+
 function JoinForm({ notice, onJoined }: { notice: string | null; onJoined: (code: string, data: Awaited<ReturnType<typeof liveApi.join>>) => void }) {
   const [code, setCode] = useState(() => codeFromUrl() ?? "");
   const [name, setName] = useState(getNickname);
   const [team, setTeam] = useState("");
-  const [room, setRoom] = useState<{ code: string; teams: boolean } | null>(null);
+  /** Team rooms: join one of these, or type a new one. */
+  const [teamChoice, setTeamChoice] = useState<string>(NEW_TEAM);
+  const [room, setRoom] = useState<{ code: string; teams: boolean; teamNames: string[] } | null>(null);
+  const [teamError, setTeamError] = useState<string | null>(null);
   const [codeError, setCodeError] = useState<string | null>(null);
   const [nameError, setNameError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -87,7 +93,9 @@ function JoinForm({ notice, onJoined }: { notice: string | null; onJoined: (code
       .stateByCode(normalized)
       .then((res) => {
         if (!live) return;
-        setRoom({ code: normalized, teams: res.snapshot.teams });
+        const teamNames = res.snapshot.teamNames ?? [];
+        setRoom({ code: normalized, teams: res.snapshot.teams, teamNames });
+        if (teamNames.length > 0) setTeamChoice((c) => (c === NEW_TEAM || teamNames.includes(c) ? c : NEW_TEAM));
         setCodeError(res.snapshot.phase === "final" ? "That game has finished." : null);
       })
       .catch((err: unknown) => live && setCodeError(err instanceof ApiError ? err.message : "Couldn't find that room."));
@@ -100,10 +108,12 @@ function JoinForm({ notice, onJoined }: { notice: string | null; onJoined: (code
     e.preventDefault();
     if (!normalized) return setCodeError("Room codes are 4 letters. Check the big screen.");
     const nickname = name.replace(/\s+/g, " ").trim();
+    const chosenTeam = room?.teams ? (teamChoice === NEW_TEAM ? team.replace(/\s+/g, " ").trim() : teamChoice) : "";
+    if (room?.teams && !chosenTeam) return setTeamError("Name your team, or pick one above.");
     if (!nickname) return setNameError("Pick a nickname.");
     setBusy(true);
     try {
-      const res = await liveApi.join(normalized, nickname, room?.teams ? team.trim() || undefined : undefined);
+      const res = await liveApi.join(normalized, nickname, chosenTeam || undefined);
       setNickname(nickname);
       onJoined(normalized, res);
     } catch (err) {
@@ -156,6 +166,69 @@ function JoinForm({ notice, onJoined }: { notice: string | null; onJoined: (code
         </p>
       </div>
 
+      {room?.teams && (
+        <fieldset className="space-y-2">
+          <legend className="block font-medium">Your team</legend>
+          {room.teamNames.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {room.teamNames.map((t) => (
+                <label
+                  key={t}
+                  className={`cursor-pointer rounded-xl px-3 py-2 ring-2 has-[:focus-visible]:ring-sun-300 ${teamChoice === t ? "bg-sun-400 font-semibold text-night-950 ring-sun-300" : "bg-white/10 ring-white/15"}`}
+                >
+                  <input
+                    type="radio"
+                    name="live-team-choice"
+                    value={t}
+                    checked={teamChoice === t}
+                    onChange={() => {
+                      setTeamChoice(t);
+                      setTeamError(null);
+                    }}
+                    className="sr-only"
+                  />
+                  {t}
+                </label>
+              ))}
+              <label
+                className={`cursor-pointer rounded-xl px-3 py-2 ring-2 has-[:focus-visible]:ring-sun-300 ${teamChoice === NEW_TEAM ? "bg-sun-400 font-semibold text-night-950 ring-sun-300" : "bg-white/10 ring-white/15"}`}
+              >
+                <input
+                  type="radio"
+                  name="live-team-choice"
+                  value={NEW_TEAM}
+                  checked={teamChoice === NEW_TEAM}
+                  onChange={() => setTeamChoice(NEW_TEAM)}
+                  className="sr-only"
+                />
+                + New team
+              </label>
+            </div>
+          )}
+          {teamChoice === NEW_TEAM && (
+            <input
+              id="live-team"
+              aria-label="New team name"
+              value={team}
+              onChange={(e) => {
+                setTeam(e.target.value);
+                setTeamError(null);
+              }}
+              maxLength={24}
+              autoCapitalize="words"
+              aria-invalid={teamError ? true : undefined}
+              placeholder="Team name"
+              className={input}
+            />
+          )}
+          {teamError && (
+            <p role="alert" className="text-sm text-amber-200">
+              {teamError}
+            </p>
+          )}
+        </fieldset>
+      )}
+
       <div className="space-y-2">
         <label htmlFor="live-nickname" className="block font-medium">
           Your nickname
@@ -180,23 +253,6 @@ function JoinForm({ notice, onJoined }: { notice: string | null; onJoined: (code
         </p>
       </div>
 
-      {room?.teams && (
-        <div className="space-y-2">
-          <label htmlFor="live-team" className="block font-medium">
-            Team <span className="font-normal text-cloud-50/50">(optional)</span>
-          </label>
-          <input
-            id="live-team"
-            value={team}
-            onChange={(e) => setTeam(e.target.value)}
-            maxLength={24}
-            autoCapitalize="words"
-            placeholder="e.g. Table 4"
-            className={input}
-          />
-          <p className="text-sm text-cloud-50/50">Use the exact same team name as your teammates.</p>
-        </div>
-      )}
 
       <BigButton type="submit">{busy ? "Joining…" : "Join"}</BigButton>
     </form>
@@ -223,6 +279,12 @@ function PlayerRoom({ seat, onLeave }: { seat: Seat; onLeave: (message: string) 
   const myRow = snap?.leaderboard?.find((r) => r.id === me?.id);
   if (myRow) lastTotal.current = myRow.total;
   const total = lastTotal.current;
+  // Team average, also kept between boards. The board's row has the latest team (the host may move players).
+  const myTeam = myRow?.team ?? me?.team ?? null;
+  const lastTeamAverage = useRef<number | null>(null);
+  const teamRow = myTeam ? snap?.teamBoard?.find((t) => t.team.toLowerCase() === myTeam.toLowerCase()) : undefined;
+  if (teamRow) lastTeamAverage.current = teamRow.average;
+  else if (!myTeam) lastTeamAverage.current = null;
 
   const kicked = removed || !!me?.kicked || (!!me && !!snap?.removed.includes(me.id));
   // This prompt's locked answer: from this session, or remembered by the server after a refresh.
@@ -287,13 +349,24 @@ function PlayerRoom({ seat, onLeave }: { seat: Seat; onLeave: (message: string) 
         backClass={revealing ? "bottom-40" : "bottom-6"}
       />
       <main className="relative z-10 mx-auto max-w-xl px-4 pt-4 pb-16">
-        <header className="pixel-panel mb-5 flex items-center justify-between gap-3 px-3 py-2 text-sm">
-          <span className="font-logo tracking-widest text-cloud-50/60">{snap.code}</span>
-          <span className="min-w-0 truncate font-medium">{me.nickname}</span>
-          <span className="flex items-center gap-2">
-            <span className="font-mono text-sun-300 tabular-nums">{metersOf(total)}</span>
-            <MuteButton />
-          </span>
+        <header className="pixel-panel mb-5 px-3 py-2 text-sm">
+          <div className="flex items-center justify-between gap-3">
+            <span className="font-logo tracking-widest text-cloud-50/60">{snap.code}</span>
+            <span className="min-w-0 truncate font-medium">{me.nickname}</span>
+            <span className="flex items-center gap-2">
+              <span className="font-mono text-sun-300 tabular-nums">
+                <span className="sr-only">Your score: </span>
+                {metersOf(total)}
+              </span>
+              <MuteButton />
+            </span>
+          </div>
+          {snap.teams && myTeam && (
+            <div className="mt-1 flex items-center justify-between gap-3 border-t border-white/10 pt-1 text-cloud-50/70">
+              <span className="min-w-0 truncate">Team {myTeam}</span>
+              <span className="font-mono text-sun-300 tabular-nums">{metersOf(lastTeamAverage.current ?? 0)} avg</span>
+            </div>
+          )}
         </header>
         {snap.closed && snap.phase !== "final" && !kicked && (
           <p className="mb-4 rounded-xl bg-night-950/85 px-3 py-2 text-cloud-50/80">The host has ended this room. Thanks for diving!</p>
@@ -310,13 +383,15 @@ function PlayerRoom({ seat, onLeave }: { seat: Seat; onLeave: (message: string) 
 }
 
 function Lobby({ me, snap }: { me: LiveMe; snap: LiveSnapshot }) {
+  // The lobby list is fresher than `me` if the host just moved this player.
+  const team = snap.players?.find((p) => p.id === me.id)?.team ?? me.team;
   return (
     <Card>
       <p className="animate-bob text-5xl" aria-hidden="true">
         🤿
       </p>
       <p className="mt-3 text-3xl font-bold">You're in, {me.nickname}!</p>
-      {me.team && <p className="mt-1 text-cloud-50/70">Team {me.team}</p>}
+      {team && <p className="mt-1 text-cloud-50/70">Team {team}</p>}
       <p className="mt-4 text-lg text-cloud-50/80">Look up at the big screen. The ascent starts soon.</p>
       <p className="mt-2 text-cloud-50/60" aria-live="polite">
         {snap.playerCount} {snap.playerCount === 1 ? "climber" : "climbers"} in the room · {snap.roundCount} prompts · {snap.seconds}s each

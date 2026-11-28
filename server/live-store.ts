@@ -96,6 +96,8 @@ export interface LiveStore {
   getPlayer(id: string): Promise<LivePlayer | null>;
   listPlayers(roomId: string): Promise<LivePlayer[]>;
   setKicked(roomId: string, playerId: string, kicked: boolean): Promise<void>;
+  /** The host moved a player to another team (null = no team). */
+  setTeam(roomId: string, playerId: string, team: string | null): Promise<void>;
 
   /** Records a locked answer; if the player already locked one this round, returns that one instead. */
   addSubmission(sub: LiveSubmission): Promise<LiveSubmission>;
@@ -198,6 +200,11 @@ export class MemoryLiveStore implements LiveStore {
   async setKicked(roomId: string, playerId: string, kicked: boolean) {
     const p = this.players.get(playerId);
     if (p && p.roomId === roomId) p.kicked = kicked;
+  }
+
+  async setTeam(roomId: string, playerId: string, team: string | null) {
+    const p = this.players.get(playerId);
+    if (p && p.roomId === roomId) p.team = team;
   }
 
   async addSubmission(sub: LiveSubmission) {
@@ -428,6 +435,12 @@ export class SupabaseLiveStore implements LiveStore {
     if (!UUID.test(playerId)) return;
     const { error } = await this.db.from("players").update({ kicked }).eq("id", playerId).eq("room_id", roomId);
     if (error) fail("players kick", error);
+  }
+
+  async setTeam(roomId: string, playerId: string, team: string | null) {
+    if (!UUID.test(playerId)) return;
+    const { error } = await this.db.from("players").update({ team }).eq("id", playerId).eq("room_id", roomId);
+    if (error) fail("players team", error);
   }
 
   async addSubmission(sub: LiveSubmission) {

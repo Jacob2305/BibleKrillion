@@ -13,7 +13,7 @@
  */
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { BankPrompt } from "../lib/game/bank.js";
-import { computeLeaderboard, computeTeamBoard, nameKey, normalizeRoomCode, randomRoomCode, revealCounts } from "../lib/game/live.js";
+import { computeLeaderboard, computeTeamBoard, nameKey, normalizeRoomCode, randomRoomCode, revealCounts, teamKey } from "../lib/game/live.js";
 import type { RevealAnswer } from "../lib/game/api-types.js";
 import type {
   LiveAiAnswer,
@@ -32,7 +32,7 @@ import { allPrompts, getPrompt, matchPrompt, publicPrompt, revealFor } from "./b
 import { MAX_ANSWER_LENGTH, SUBMIT_GRACE_MS, promptSeconds } from "./config.js";
 import { HttpError, json, readJsonBody, withErrors } from "./http.js";
 import { EVENT_PROMPT_IDS } from "./event-set.js";
-import { addBots, botsAnswer, visibleSubs } from "./live-bots.js";
+import { BOT_TEAM, addBots, botsAnswer, visibleSubs } from "./live-bots.js";
 import { getBroadcaster, type Broadcaster } from "./live-broadcast.js";
 import { ROOM_TTL_MS, getLiveStore, type LivePlayer, type LiveRoom, type LiveStore, type LiveSubmission, type RoomPatch } from "./live-store.js";
 import { cleanNickname, cleanTeamName } from "./names.js";
@@ -203,6 +203,20 @@ function retierReveal(room: LiveRoom, roundIndex: number, answers: RevealAnswer[
     .sort((a, b) => b.points - a.points || a.canonical.localeCompare(b.canonical));
 }
 
+// ───────────────────────── teams ─────────────────────────
+
+/** Teams in the room (first spelling wins), A–Z. */
+function teamNamesOf(players: readonly LivePlayer[]): string[] {
+  const names = new Map<string, string>();
+  for (const p of players) if (p.team && !names.has(teamKey(p.team))) names.set(teamKey(p.team), p.team);
+  return [...names.values()].sort((a, b) => a.localeCompare(b));
+}
+
+/** "table 4" joins an existing "Table 4" rather than starting a near-duplicate team. */
+function existingTeamSpelling(players: readonly LivePlayer[], team: string): string {
+  return players.find((p) => p.team && teamKey(p.team) === teamKey(team))?.team ?? team;
+}
+
 // ───────────────────────── views ─────────────────────────
 
 export function buildSnapshot(room: LiveRoom, players: readonly LivePlayer[], allSubs: readonly LiveSubmission[], now: number): LiveSnapshot {
@@ -223,6 +237,7 @@ export function buildSnapshot(room: LiveRoom, players: readonly LivePlayer[], al
     removed: players.filter((p) => p.kicked).map((p) => p.id),
   };
 
+  if (room.teams) snapshot.teamNames = teamNamesOf(active);
   if (room.phase === "lobby") {
     snapshot.players = active.map((p) => ({ id: p.id, nickname: p.nickname, team: p.team }));
     return snapshot;
@@ -395,7 +410,7 @@ export async function create(body: Record<string, unknown>, deps: LiveDeps): Pro
   const bots = body.bots === false ? 0 : (deps.bots ?? 0);
   if (bots > 0) {
     try {
-      await addBots(store, room.id, now, bots);
+      await addBots(store, room.id, now, bots, room.teams ? BOT_TEAM : null);
     } catch (err) {
       // Before migration 0004 the database has no bot column: host without bots rather than fail.
       if (!(err instanceof HttpError && err.code === "migration")) throw err;
@@ -447,11 +462,27 @@ export async function host(body: Record<string, unknown>, deps: LiveDeps): Promi
         rounds <= room.promptIds.length
           ? room.promptIds.slice(0, rounds)
           : [...room.promptIds, ...roomPrompts(rounds - room.promptIds.length, deps.random, room.promptIds)];
+      const teams = typeof body.teams === "boolean" ? body.teams : room.teams;
+      if (teams && !room.teams) {
+        for (const p of await store.listPlayers(room.id)) if (p.bot && !p.team) await store.setTeam(room.id, p.id, BOT_TEAM);
+      }
       await change({
         promptIds,
         seconds: clampInt(body.seconds, SECOND_LIMITS.min, SECOND_LIMITS.max, room.seconds),
-        teams: typeof body.teams === "boolean" ? body.teams : room.teams,
+        teams,
       });
+      break;
+    }
+
+    case "team": {
+      // The host moves a player to another team (or a brand-new one, or none).
+      const playerId = body.playerId;
+      if (typeof playerId !== "string") throw new HttpError(400, "Which player?");
+      const players = await store.listPlayers(room.id);
+      if (!players.some((p) => p.id === playerId)) throw new HttpError(404, "That player isn't in this room.");
+      const wanted = body.team === null || body.team === "" ? null : cleanTeamName(body.team);
+      await store.setTeam(room.id, playerId, wanted && existingTeamSpelling(players, wanted));
+      await change({});
       break;
     }
 
@@ -585,7 +616,8 @@ export async function join(body: Record<string, unknown>, deps: LiveDeps): Promi
 
   const existing = await store.listPlayers(room.id);
   if (existing.filter((p) => !p.kicked).length >= MAX_PLAYERS) throw new HttpError(409, "This room is full.", "full");
-  const team = room.teams ? cleanTeamName(body.team) : null;
+  const wantedTeam = room.teams ? cleanTeamName(body.team) : null;
+  const team = wantedTeam && existingTeamSpelling(existing, wantedTeam);
   const player = await store.addPlayer({ roomId: room.id, nickname, nameKey: nameKey(nickname), team, now });
   if (player === "name_taken") throw new HttpError(409, `Someone here is already called “${nickname}”. Pick another name.`, "name_taken");
 

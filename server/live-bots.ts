@@ -17,9 +17,12 @@ export const BOT_NAMES = ["Bot Gabriel", "Bot Deborah"] as const;
 export const BOT_MISS_RATE = 0.15;
 
 /** Adds the bots to a new room. */
-export async function addBots(store: LiveStore, roomId: string, now: number, count: number = BOT_NAMES.length): Promise<void> {
+/** In team rooms the bots play as one team, so the team board has something on it while testing. */
+export const BOT_TEAM = "Bots";
+
+export async function addBots(store: LiveStore, roomId: string, now: number, count: number = BOT_NAMES.length, team: string | null = null): Promise<void> {
   for (const nickname of BOT_NAMES.slice(0, count)) {
-    await store.addPlayer({ roomId, nickname, nameKey: nameKey(nickname), team: null, now, bot: true });
+    await store.addPlayer({ roomId, nickname, nameKey: nameKey(nickname), team, now, bot: true });
   }
 }
 
