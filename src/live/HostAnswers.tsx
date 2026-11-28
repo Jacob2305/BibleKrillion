@@ -10,7 +10,8 @@ import { TierBadge } from "../game/TierBadge";
 import { TIER_STYLE } from "../game/tierStyle";
 import { liveApi } from "./liveApi";
 
-const DRAG_TYPE = "text/plain";
+/** Our own drag type, so another draggable's data is never read as an answer. */
+const DRAG_TYPE = "application/x-bible-dive-answer";
 
 export function HostAnswers({
   token,
@@ -29,6 +30,14 @@ export function HostAnswers({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [over, setOver] = useState<AnswerTier | null>(null);
+  const [dragging, setDragging] = useState<string | null>(null);
+  /** The answer that just landed in a new tier, flashed briefly so the move is obvious. */
+  const [landed, setLanded] = useState<string | null>(null);
+  useEffect(() => {
+    if (!landed) return;
+    const t = window.setTimeout(() => setLanded(null), 1600);
+    return () => window.clearTimeout(t);
+  }, [landed]);
 
   const load = useCallback(async () => {
     try {
@@ -50,6 +59,7 @@ export function HostAnswers({
     // Show the move straight away; the server's reply replaces it.
     setData({ ...data, answers: data.answers.map((a) => (a.canonical === canonical ? { ...a, tier } : a)) });
     setSaving(canonical);
+    setLanded(canonical);
     setError(null);
     try {
       const res = await liveApi.host(token, "retier", { index, canonical, tier });
@@ -70,7 +80,9 @@ export function HostAnswers({
   const moved = data.answers.filter((a) => a.tier !== a.baseTier).length;
   const onDrop = (tier: AnswerTier) => (e: DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setOver(null);
+    setDragging(null);
     const canonical = e.dataTransfer.getData(DRAG_TYPE);
     if (canonical) void move(canonical, tier);
   };
@@ -94,11 +106,17 @@ export function HostAnswers({
               key={tier}
               aria-label={`${TIER_INFO[tier].label} answers`}
               onDragOver={(e) => {
+                if (!e.dataTransfer.types.includes(DRAG_TYPE)) return;
                 e.preventDefault();
+                e.stopPropagation();
                 e.dataTransfer.dropEffect = "move";
                 if (over !== tier) setOver(tier);
               }}
-              onDragLeave={() => setOver((t) => (t === tier ? null : t))}
+              onDragLeave={(e) => {
+                // Moving over an answer inside the column isn't leaving it.
+                if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                setOver((t) => (t === tier ? null : t));
+              }}
               onDrop={onDrop(tier)}
               className={`flex min-h-24 flex-col rounded-xl border-2 bg-night-950/60 p-2 transition-colors ${
                 over === tier ? "border-sun-300 bg-night-700/70" : TIER_STYLE[tier].row
@@ -113,7 +131,19 @@ export function HostAnswers({
               <ul className="max-h-72 space-y-1 overflow-y-auto">
                 {list.length === 0 && <li className="py-2 text-center text-xs text-cloud-50/40">—</li>}
                 {list.map((a) => (
-                  <AnswerChip key={a.canonical} answer={a} saving={saving === a.canonical} onMove={(t) => void move(a.canonical, t)} />
+                  <AnswerChip
+                    key={a.canonical}
+                    answer={a}
+                    saving={saving === a.canonical}
+                    dragging={dragging === a.canonical}
+                    landed={landed === a.canonical}
+                    onDragStart={() => setDragging(a.canonical)}
+                    onDragEnd={() => {
+                      setDragging(null);
+                      setOver(null);
+                    }}
+                    onMove={(t) => void move(a.canonical, t)}
+                  />
                 ))}
               </ul>
             </section>
@@ -124,16 +154,37 @@ export function HostAnswers({
   );
 }
 
-function AnswerChip({ answer: a, saving, onMove }: { answer: LiveHostAnswer; saving: boolean; onMove: (tier: AnswerTier) => void }) {
+function AnswerChip({
+  answer: a,
+  saving,
+  dragging,
+  landed,
+  onDragStart,
+  onDragEnd,
+  onMove,
+}: {
+  answer: LiveHostAnswer;
+  saving: boolean;
+  dragging: boolean;
+  landed: boolean;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+  onMove: (tier: AnswerTier) => void;
+}) {
   const moved = a.tier !== a.baseTier;
   return (
     <li
       draggable
       onDragStart={(e) => {
+        e.stopPropagation();
         e.dataTransfer.setData(DRAG_TYPE, a.canonical);
         e.dataTransfer.effectAllowed = "move";
+        onDragStart();
       }}
-      className={`flex cursor-grab items-center gap-2 rounded-lg bg-white/5 px-2 py-1 text-sm active:cursor-grabbing ${saving ? "opacity-60" : ""}`}
+      onDragEnd={onDragEnd}
+      className={`flex cursor-grab items-center gap-2 rounded-lg px-2 py-1 text-sm transition-colors active:cursor-grabbing ${
+        landed ? "bg-sun-300/30 ring-2 ring-sun-300" : "bg-white/5"
+      } ${dragging ? "opacity-40" : ""} ${saving ? "opacity-60" : ""}`}
       title={a.reference}
     >
       <span className="min-w-0 flex-1 truncate">

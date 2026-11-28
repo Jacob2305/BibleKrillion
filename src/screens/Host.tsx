@@ -684,7 +684,8 @@ function Prompts({ snap, host, act, busy, answers }: { snap: LiveSnapshot; host:
               key={p.id}
               draggable={lobby && !open}
               onDragStart={(e: DragEvent<HTMLLIElement>) => {
-                if (!lobby) return;
+                // Only the row itself: dragging an answer inside the open answer board must not start a reorder.
+                if (!lobby || e.target !== e.currentTarget) return;
                 e.dataTransfer.effectAllowed = "move";
                 e.dataTransfer.setData("text/plain", String(p.index));
                 setDragging(p.index);
