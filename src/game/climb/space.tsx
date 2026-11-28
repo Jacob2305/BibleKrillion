@@ -14,10 +14,17 @@ import {
   SPARKLE_8,
   SPARKLE_TINTS,
   SPARKLE_TINY,
+  SPACE_STATION,
+  SPACE_STATION_COLORS,
   spiralGalaxy,
   starCluster,
 } from "./space-art";
+import { METEOR, METEOR_COLORS } from "./sky-art";
 import { Art, Stars, Zone, px } from "./zone";
+
+/** Nebula image size in art pixels (shared by both zones). */
+const NEB_W = 320;
+const NEB_H = 104;
 
 // ───────────────────────── Deep Cut: outer space ─────────────────────────
 
@@ -35,9 +42,83 @@ const ROCKS = [
   { a: asteroid(3, 40), x: 83, y: 16 },
 ];
 
+/**
+ * Extra depth for WIDE screens only (the projector). A portrait phone already
+ * looks full, so none of this renders there: faint nebula wisps, a soft glow,
+ * an asteroid belt, a distant galaxy, a drifting station, coloured twinkles and
+ * an occasional shooting star. The band right of centre (where the projector
+ * stacks answer boxes) and the top (behind the prompt) are left quiet.
+ */
+const WIDE = "hidden landscape:min-[900px]:block";
+const DEEP_WISP_LOW = gridUrl(nebulaClouds(NEB_W, NEB_H, 83, ["G", "T", "G", "M", "G", "T"], "both", 0.5), NEBULA_PALETTE);
+const DEEP_WISP_HIGH = gridUrl(nebulaClouds(NEB_W, NEB_H, 91, ["M", "G", "G", "T", "G", "G"], "both", 0.35), NEBULA_PALETTE);
+const DEEP_GALAXY = spiralGalaxy(38, 16, 47);
+/** A belt of small rocks running up and left from the existing cluster at bottom right. */
+const BELT = (() => {
+  const r = seeded(212);
+  return Array.from({ length: 11 }, (_, i) => {
+    const t = i / 10;
+    return { a: asteroid(1.5 + r() * 2, 300 + i), x: 52 - t * 30 + (r() - 0.5) * 4, y: 21 + t * 17 + (r() - 0.5) * 5 };
+  });
+})();
+const DEEP_TWINKLES = [
+  { x: 27, y: 50, kind: 2, tint: 1, delay: 0.4 },
+  { x: 27, y: 7, kind: 0, tint: 2, delay: 1.6 },
+  { x: 55, y: 52, kind: 2, tint: 0, delay: 2.3 },
+  { x: 33, y: 27, kind: 1, tint: 3, delay: 0.9 },
+  { x: 60, y: 4, kind: 2, tint: 1, delay: 2.8 },
+  { x: 22, y: 62, kind: 2, tint: 2, delay: 1.2 },
+  { x: 47, y: 15, kind: 2, tint: 3, delay: 0.1 },
+];
+const DEEP_SPARKLES = [SPARKLE_4, SPARKLE_8, SPARKLE_TINY];
+
+function WideDeepSpace() {
+  return (
+    <div className={`absolute inset-0 ${WIDE}`} aria-hidden="true">
+      {/* soft violet and teal light pooling across the middle */}
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(ellipse 38% 30% at 40% 70%, rgba(140,110,255,0.16), rgba(140,110,255,0) 70%), radial-gradient(ellipse 30% 26% at 22% 45%, rgba(90,220,230,0.10), rgba(90,220,230,0) 70%)",
+        }}
+      />
+      <div className="absolute inset-0 opacity-40">
+        <Nebula url={DEEP_WISP_LOW} y={30} />
+      </div>
+      <div className="absolute inset-0 opacity-20">
+        <Nebula url={DEEP_WISP_HIGH} y={64} />
+      </div>
+      <Stars count={60} seed={47} />
+      <Stars count={14} seed={48} color="#ffb0dc" />
+      <Art art={DEEP_GALAXY.art} palette={DEEP_GALAXY.palette} x={38} y={12} center className="opacity-60" />
+      {BELT.map((b, i) => (
+        <Art key={i} art={b.a.art} palette={b.a.palette} x={b.x} y={b.y} center className="opacity-90" />
+      ))}
+      <div className="deep-station absolute" style={{ left: "52%", bottom: "39%" }}>
+        <Art art={SPACE_STATION} palette={SPACE_STATION_COLORS} x={0} y={0} className="relative" />
+      </div>
+      {DEEP_TWINKLES.map((t, i) => (
+        <Art
+          key={`tw${i}`}
+          art={DEEP_SPARKLES[t.kind]!}
+          palette={SPARKLE_TINTS[t.tint]!}
+          x={t.x}
+          y={t.y}
+          center
+          className="animate-twinkle"
+          style={{ animationDelay: `${t.delay}s` }}
+        />
+      ))}
+      <Art art={METEOR} palette={METEOR_COLORS} x={20} y={56} className="deep-shooting" />
+    </div>
+  );
+}
+
 export function OuterSpace() {
   return (
     <Zone index={4}>
+      <WideDeepSpace />
       <Stars count={90} seed={44} />
       <Stars count={14} seed={45} color="#a8e4ff" />
       <Stars count={10} seed={46} color="#ffd9a0" />
@@ -57,8 +138,6 @@ export function OuterSpace() {
 
 // ───────────────────────── One in a Million: the cosmos ─────────────────────────
 
-const NEB_W = 320;
-const NEB_H = 104;
 /** The nebulae are big, so they're drawn as images (no DOM nodes per pixel run). */
 const NEBULA_TOP = gridUrl(nebulaClouds(NEB_W, NEB_H, 3, ["M", "T", "G", "M", "T", "G"]), NEBULA_PALETTE);
 /** A dimmer, mostly violet layer that fills the band across the middle. */

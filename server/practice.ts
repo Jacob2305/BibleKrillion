@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { getPrompt, matchPrompt, pickRandomPromptIds, publicPrompt, revealAnswer, revealFor, withTiers } from "./bank.js";
 import { MAX_ANSWER_LENGTH, SUBMIT_GRACE_MS, promptSeconds } from "./config.js";
 import { HttpError, json, readJsonBody, withErrors } from "./http.js";
-import { aiRevealAnswer, defaultJudgeDeps, judgeRejectionMessage, judgeUnlisted, type JudgeDeps } from "./judge.js";
+import { aiRevealAnswer, defaultJudgeDeps, judgeRejectionMessage, judgeSuggestion, judgeUnlisted, type JudgeDeps } from "./judge.js";
 import { logRejectedAnswer } from "./rejections.js";
 import { getTierStore, type TierStore } from "./tier-store.js";
 import { signToken, verifyToken } from "./tokens.js";
@@ -115,11 +115,10 @@ export async function answer(body: Record<string, unknown>, deps: Deps): Promise
       // Each prompt attempt has its own token, so it doubles as the rate-limit key.
       const callerKey = `practice:${createHash("sha256").update(String(body.promptToken)).digest("hex").slice(0, 24)}`;
       const verdict = await judgeUnlisted({ prompt, raw, callerKey }, deps.judge ?? defaultJudgeDeps);
-      if (verdict.kind === "bank") {
-        // A bank answer worded differently: recommend it, never lock it unasked.
-        if (body.confirm !== true) return { status: "confirm", suggestion: verdict.answer.canonical };
-        return { status: "accepted", answer: revealAnswer(verdict.answer), reveal: revealFor(prompt) };
-      }
+      // A different wording or spelling than typed: recommend it, never lock it unasked.
+      const suggestion = judgeSuggestion(raw, verdict);
+      if (suggestion && body.confirm !== true) return { status: "confirm", suggestion };
+      if (verdict.kind === "bank") return { status: "accepted", answer: revealAnswer(verdict.answer), reveal: revealFor(prompt) };
       if (verdict.kind === "accepted") {
         return { status: "accepted", answer: aiRevealAnswer(verdict.canonical, verdict.reference), reveal: revealFor(prompt) };
       }

@@ -3,7 +3,9 @@ import { normalizeRoomCode } from "../../lib/game/live";
 import type { RevealAnswer } from "../../lib/game/api-types";
 import type { LiveMe, LiveSnapshot } from "../../lib/game/live-types";
 import { APP_NAME } from "../../lib/game/brand";
-import { RevealHud, World, useRevealClimb, type RevealClimb } from "../game/climb/Climb";
+import { TIER_INFO } from "../../lib/game/scoring";
+import { RevealHud, World } from "../game/climb/Climb";
+import { roomStops, useFollowClimb, type FollowClimb } from "../game/climb/staged";
 import { SkyPage } from "../game/Sky";
 import { BigButton } from "../game/DivePlayer";
 import { SuggestionLine, suggestionShowing } from "../game/Suggestion";
@@ -314,10 +316,23 @@ function PlayerRoom({ seat, onLeave }: { seat: Seat; onLeave: (message: string) 
   const kicked = removed || !!me?.kicked || (!!me && !!snap?.removed.includes(me.id));
   // This prompt's locked answer: from this session, or remembered by the server after a refresh.
   const lockedNow = snap && me ? ([locked, me.current].find((l) => l && snap.question && l.index === snap.question.index) ?? null) : null;
-  const revealing = !!snap && !!me && snap.phase === "reveal" && !!snap.reveal && !kicked;
-  const myAnswer = revealing && lockedNow ? snap.reveal!.reveal.answers.find((a) => a.canonical === lockedNow.canonical) : undefined;
-  // The world climbs to this player's tier at the reveal, then glides back to the sea for the next prompt.
-  const climb = useRevealClimb({
+  // The reveal stays on the phone when the host shows the leaderboard on the big screen
+  // (that snapshot carries no reveal), so remember the last one for this prompt.
+  const lastReveal = useRef<{ snap: LiveSnapshot; answer: RevealAnswer | undefined } | null>(null);
+  if (snap?.phase === "reveal" && snap.reveal && me) {
+    const mine = [locked, me.current].find((l) => l && snap.question && l.index === snap.question.index) ?? null;
+    lastReveal.current = { snap, answer: mine ? snap.reveal.reveal.answers.find((a) => a.canonical === mine.canonical) : undefined };
+  } else if (snap && snap.phase !== "leaderboard") {
+    lastReveal.current = null;
+  }
+  const shown = snap && lastReveal.current && lastReveal.current.snap.roundIndex === snap.roundIndex ? lastReveal.current : null;
+  const revealing = !!shown && !!me && !kicked;
+  const myAnswer = shown?.answer;
+  // Rise with the room (the same stops as the big screen), then glide to this player's own tier.
+  const { stops, holdMs } = roomStops(shown?.snap.reveal);
+  const climb = useFollowClimb({
+    stops,
+    holdMs,
     tier: myAnswer?.tier ?? "miss",
     active: revealing,
     roundKey: snap?.roundIndex ?? -1,
@@ -357,10 +372,11 @@ function PlayerRoom({ seat, onLeave }: { seat: Seat; onLeave: (message: string) 
         onStale={() => void room.refresh()}
       />
     );
-  } else if (snap.phase === "reveal") {
-    body = <MyReveal snap={snap} answer={myAnswer} climb={climb} />;
-  } else if (snap.phase === "leaderboard") {
-    body = <Standings snap={snap} me={me} />;
+  } else if (shown) {
+    body = <MyReveal snap={shown.snap} answer={myAnswer} climb={climb} />;
+  } else if (snap.phase === "reveal" || snap.phase === "leaderboard") {
+    // Rejoined after the reveal: nothing to replay; the place line at the bottom has the standings.
+    body = null;
   } else {
     body = <Final snap={snap} me={me} />;
   }
@@ -501,14 +517,7 @@ function Answering({
     e.preventDefault();
     void send(text);
   };
-  // A "Did you mean …?" still showing at the buzzer counts as yes (the server allows a short grace).
-  const autoConfirmed = useRef(false);
-  useEffect(() => {
-    if (timeUp && !autoConfirmed.current && suggestionShowing(suggestion, text)) {
-      autoConfirmed.current = true;
-      void send(text, true);
-    }
-  });
+  // A "Did you mean …?" is only accepted when the player says yes; the buzzer never accepts it for them.
 
   return (
     <div className="pixel-panel space-y-5 p-5">
@@ -576,7 +585,24 @@ function Locked({ canonical, snap }: { canonical: string; snap: LiveSnapshot }) 
 }
 
 /** The reveal stays where the climb landed. Kept minimal: the big screen shows the answers. */
-function MyReveal({ snap, answer, climb }: { snap: LiveSnapshot; answer: RevealAnswer | undefined; climb: RevealClimb }) {
+function MyReveal({ snap, answer, climb }: { snap: LiveSnapshot; answer: RevealAnswer | undefined; climb: FollowClimb }) {
+  if (climb.following) {
+    // Rising with the room: just the prompt and the altimeter, so eyes go to the big screen.
+    const tier = climb.room.tier;
+    return (
+      <div className="pointer-events-none fixed inset-x-0 top-24 z-20 px-4 text-center">
+        <div className="pixel-panel mx-auto w-fit max-w-md px-5 py-3">
+          <p className="text-sm text-cloud-50/80">{snap.question?.prompt.prompt}</p>
+          <p className="mt-1 font-mono text-3xl text-sun-300 tabular-nums" aria-hidden="true">
+            ▲ <span ref={climb.room.meterRef}>0 m</span>
+          </p>
+          <p className="sr-only" role="status">
+            {tier ? `${TIER_INFO[tier].label} reached` : "Rising"}
+          </p>
+        </div>
+      </div>
+    );
+  }
   return (
     <RevealHud
       climb={climb}
@@ -593,30 +619,6 @@ function MyReveal({ snap, answer, climb }: { snap: LiveSnapshot; answer: RevealA
         )
       }
     />
-  );
-}
-
-function Standings({ snap, me }: { snap: LiveSnapshot; me: LiveMe }) {
-  const row = snap.leaderboard?.find((r) => r.id === me.id);
-  return (
-    <div className="space-y-5">
-      <Card>
-        <p className="text-sm text-cloud-50/60">
-          After {snap.roundIndex + 1} of {snap.roundCount} prompts
-        </p>
-        <p className="mt-1 text-5xl font-bold">{row ? `#${row.rank}` : "–"}</p>
-        <p className="mt-1 text-cloud-50/70">
-          of {snap.playerCount} · {metersOf(row?.total ?? 0)}
-        </p>
-      </Card>
-      {snap.leaderboard && <Leaderboard rows={snap.leaderboard} limit={5} highlightId={me.id} />}
-      {snap.teamBoard && snap.teamBoard.length > 0 && (
-        <section>
-          <h2 className="mb-2 font-semibold">Teams</h2>
-          <TeamBoard rows={snap.teamBoard} />
-        </section>
-      )}
-    </div>
   );
 }
 

@@ -60,7 +60,7 @@ export function useDive(api: DiveApi) {
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   const suggestionRef = useRef<Suggestion | null>(null);
   suggestionRef.current = suggestion;
-  /** What's in the answer box right now (to auto-confirm a suggestion at the buzzer). */
+  /** What's in the answer box right now. */
   const draftRef = useRef("");
 
   const diveRef = useRef<string | null>(null);
@@ -172,17 +172,12 @@ export function useDive(api: DiveApi) {
       expiredWhileSubmittingRef.current = true;
       return;
     }
-    // A "Did you mean …?" still showing at the buzzer counts as yes (the server allows a short grace).
-    const pending = suggestionRef.current;
-    if (pending && sameText(pending.text, draftRef.current)) {
-      void submitRef.current(pending.text, { atBuzzer: true });
-      return;
-    }
+    // A "Did you mean …?" nobody confirmed is not an answer: only what the player confirms counts.
     void revealMiss(round);
   }, [revealMiss]);
 
   const submit = useCallback(
-    async (text: string, opts: { atBuzzer?: boolean } = {}) => {
+    async (text: string) => {
       const round = roundRef.current;
       if (!round || submittingRef.current) return;
       if (!text.trim()) {
@@ -192,7 +187,7 @@ export function useDive(api: DiveApi) {
       // Pressing Enter again on the same text confirms the suggested spelling.
       const confirm = !!suggestionRef.current && sameText(suggestionRef.current.text, text);
       submittingRef.current = true;
-      expiredWhileSubmittingRef.current = !!opts.atBuzzer;
+      expiredWhileSubmittingRef.current = false;
       setSubmitting(true);
       try {
         const res = await api.answer(round.promptToken, text, confirm || undefined);
@@ -203,7 +198,6 @@ export function useDive(api: DiveApi) {
             playSfx({ name: "suggest" });
             setFeedback(null);
             setSuggestion({ text: text.trim(), canonical: res.suggestion });
-            if (opts.atBuzzer) expiredWhileSubmittingRef.current = true;
             return;
           case "accepted":
             playSfx({ name: "lock" });
@@ -231,8 +225,6 @@ export function useDive(api: DiveApi) {
     },
     [api, finishRound, revealMiss],
   );
-  const submitRef = useRef(submit);
-  submitRef.current = submit;
   const noteDraft = useCallback((text: string) => {
     draftRef.current = text;
   }, []);

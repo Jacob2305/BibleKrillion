@@ -4,7 +4,7 @@ import type { AnswerResponse, DailyFinishResponse, DiveStartResponse, PromptBegi
 import { validateBank, type Bank } from "../../lib/game/bank";
 import type { LiveAnswerResponse, LiveHostResponse, LiveJoinResponse } from "../../lib/game/live-types";
 import { mergeApproved } from "../../scripts/merge-lib";
-import { allPrompts, getPrompt } from "../bank";
+import { allPrompts, getPrompt, matchPrompt } from "../bank";
 import { createDailyHandler } from "../daily";
 import { dailyPromptIds, dayKey } from "../daily-schedule";
 import { MemoryDailyStore } from "../daily-store";
@@ -291,3 +291,154 @@ describe("merge-approved", () => {
     expect(result.skipped[0]!.why).toMatch(/too close/);
   });
 });
+
+// ───────────────────────── never lock a correction unasked ─────────────────────────
+
+/** A typo of some answer that the matcher corrects (a fuzzy hit), and what it corrects to. */
+function typoFor(promptId: string): { typo: string; canonical: string } {
+  const p = getPrompt(promptId)!;
+  for (const a of p.answers) {
+    if (a.generic_for || a.canonical.length < 6) continue;
+    const typo = a.canonical.slice(0, 2) + a.canonical.slice(3);
+    const m = matchPrompt(p, typo);
+    if (m.kind === "fuzzy" && m.answer.canonical === a.canonical) return { typo, canonical: a.canonical };
+  }
+  throw new Error(`no typo-able answer for ${promptId}`);
+}
+
+/** A listed alias that is an exact hit for its answer. */
+function aliasFor(promptId: string): { alias: string; canonical: string } {
+  const p = getPrompt(promptId)!;
+  for (const a of p.answers) {
+    for (const alias of a.aliases) {
+      const m = matchPrompt(p, alias);
+      if (m.kind === "exact" && m.answer.canonical === a.canonical) return { alias, canonical: a.canonical };
+    }
+  }
+  throw new Error(`no alias for ${promptId}`);
+}
+
+/** The judge accepts an unlisted answer but spells it differently than typed. */
+const RESPELLED: Verdict = { ...VALID, canonical: "Zz Testpersson" };
+
+describe("Never locks a correction unasked: Practice", () => {
+  const open = allPrompts().find((p) => !p.closed_set)!;
+  const setup = (verdict?: () => Verdict) => {
+    const clock = { t: T0 };
+    const judge = judgeDeps(clock, verdict);
+    const handler = createPracticeHandler({ now: () => clock.t, random: Math.random, judge: judge.deps });
+    const promptToken = signToken({ k: "practice-prompt", pid: open.id, i: 0, dl: T0 + 25_000 });
+    const answer = (text: string, confirm?: boolean) => call<AnswerResponse>(handler, { action: "answer", promptToken, text, confirm });
+    return { answer, judge };
+  };
+
+  it("a typo is recommended, then locked on confirm", async () => {
+    const { answer } = setup();
+    const { typo, canonical } = typoFor(open.id);
+    expect((await answer(typo)).data).toEqual({ status: "confirm", suggestion: canonical });
+    expect((await answer(typo, true)).data).toMatchObject({ status: "accepted", answer: { canonical } });
+  });
+
+  it("an AI answer spelled differently than typed is recommended, then locked on confirm (one AI call)", async () => {
+    const { answer, judge } = setup(() => RESPELLED);
+    expect((await answer("zz testperson")).data).toEqual({ status: "confirm", suggestion: "Zz Testpersson" });
+    expect((await answer("zz testperson", true)).data).toMatchObject({ status: "accepted", answer: { canonical: "Zz Testpersson", aiJudged: true } });
+    expect(judge.calls).toHaveLength(1);
+  });
+
+  it("an AI answer spelled as typed, and a listed alias, lock directly", async () => {
+    const { answer } = setup();
+    expect((await answer("ZZ  testperson!")).data).toMatchObject({ status: "accepted", answer: { canonical: AI_ANSWER } });
+    const { alias, canonical } = aliasFor(open.id);
+    expect((await answer(alias)).data).toMatchObject({ status: "accepted", answer: { canonical } });
+  });
+});
+
+describe("Never locks a correction unasked: Daily", () => {
+  async function dailyAt(verdict?: () => Verdict) {
+    const clock = { t: T0 };
+    const judge = judgeDeps(clock, verdict);
+    const store = new MemoryDailyStore();
+    const handler = createDailyHandler({ now: () => clock.t, store: () => store, judge: judge.deps });
+    const ids = dailyPromptIds(dayKey(T0));
+    const index = ids.findIndex((id) => !getPrompt(id)!.closed_set);
+    const deviceId = `device-unasked-${Math.random().toString(36).slice(2, 8)}`;
+    const { data: start } = await call<DiveStartResponse>(handler, { action: "start", deviceId, nickname: "Jo" });
+    for (let i = 0; i < index; i++) {
+      const { data: b } = await call<PromptBeginResponse>(handler, { action: "begin", dive: start.dive, index: i });
+      await call<AnswerResponse>(handler, { action: "answer", promptToken: b.promptToken, text: bankAnswer(ids[i]!) });
+    }
+    const { data: b } = await call<PromptBeginResponse>(handler, { action: "begin", dive: start.dive, index });
+    const answer = (text: string, confirm?: boolean) => call<AnswerResponse>(handler, { action: "answer", promptToken: b.promptToken, text, confirm });
+    return { answer, promptId: ids[index]! };
+  }
+
+  it("a typo is recommended, then locked on confirm", async () => {
+    const { answer, promptId } = await dailyAt();
+    const { typo, canonical } = typoFor(promptId);
+    expect((await answer(typo)).data).toEqual({ status: "confirm", suggestion: canonical });
+    expect((await answer(typo, true)).data).toMatchObject({ status: "accepted", answer: { canonical } });
+  });
+
+  it("an AI answer spelled differently than typed is recommended, then locked on confirm", async () => {
+    const { answer } = await dailyAt(() => RESPELLED);
+    expect((await answer("zz testperson")).data).toEqual({ status: "confirm", suggestion: "Zz Testpersson" });
+    expect((await answer("zz testperson", true)).data).toMatchObject({ status: "accepted", answer: { canonical: "Zz Testpersson", aiJudged: true } });
+  });
+
+  it("a listed alias locks directly", async () => {
+    const { answer, promptId } = await dailyAt();
+    const { alias, canonical } = aliasFor(promptId);
+    expect((await answer(alias)).data).toMatchObject({ status: "accepted", answer: { canonical } });
+  });
+
+  it("an AI answer spelled as typed locks directly", async () => {
+    const { answer } = await dailyAt();
+    expect((await answer("zz testperson")).data).toMatchObject({ status: "accepted", answer: { canonical: AI_ANSWER } });
+  });
+});
+
+describe("Never locks a correction unasked: Live", () => {
+  async function liveAt(verdict?: () => Verdict) {
+    const clock = { t: T0 };
+    const judge = judgeDeps(clock, verdict);
+    const store = new MemoryLiveStore();
+    const broadcaster: Broadcaster = { realtimeFor: () => null, send: async () => {} };
+    const handler = createLiveHandler({ now: () => clock.t, random: Math.random, store: () => store, broadcaster: () => broadcaster, sleep: async (ms) => void (clock.t += ms), judge: judge.deps });
+    let { data: room } = await call<LiveHostResponse>(handler, { action: "create" });
+    while (getPrompt(room.host.prompts[0]!.id)!.closed_set) {
+      room = (await call<LiveHostResponse>(handler, { action: "host", hostToken: room.hostToken, op: "swap", index: 0 })).data;
+    }
+    const ann = (await call<LiveJoinResponse>(handler, { action: "join", code: room.snapshot.code, nickname: "Ann" })).data;
+    await call<LiveJoinResponse>(handler, { action: "join", code: room.snapshot.code, nickname: "Bo" });
+    await call(handler, { action: "host", hostToken: room.hostToken, op: "start" });
+    const answer = (text: string, confirm?: boolean) =>
+      call<LiveAnswerResponse>(handler, { action: "answer", playerToken: ann.playerToken, index: 0, text, confirm });
+    return { answer, promptId: room.host.prompts[0]!.id };
+  }
+
+  it("a typo is recommended, then locked on confirm", async () => {
+    const { answer, promptId } = await liveAt();
+    const { typo, canonical } = typoFor(promptId);
+    expect((await answer(typo)).data).toEqual({ status: "confirm", suggestion: canonical });
+    expect((await answer(typo, true)).data).toEqual({ status: "locked", index: 0, canonical });
+  });
+
+  it("an AI answer spelled differently than typed is recommended, then locked on confirm", async () => {
+    const { answer } = await liveAt(() => RESPELLED);
+    expect((await answer("zz testperson")).data).toEqual({ status: "confirm", suggestion: "Zz Testpersson" });
+    expect((await answer("zz testperson", true)).data).toEqual({ status: "locked", index: 0, canonical: "Zz Testpersson" });
+  });
+
+  it("a listed alias locks directly", async () => {
+    const { answer, promptId } = await liveAt();
+    const { alias, canonical } = aliasFor(promptId);
+    expect((await answer(alias)).data).toEqual({ status: "locked", index: 0, canonical });
+  });
+
+  it("an AI answer spelled as typed locks directly", async () => {
+    const { answer } = await liveAt();
+    expect((await answer("zz testperson")).data).toEqual({ status: "locked", index: 0, canonical: AI_ANSWER });
+  });
+});
+

@@ -30,7 +30,7 @@ import { MAX_ANSWER_LENGTH, SUBMIT_GRACE_MS, promptSeconds } from "./config.js";
 import { dailyPromptIds, dayKey } from "./daily-schedule.js";
 import { getDailyStore, type DailyAttempt, type DailyRound, type DailyStore } from "./daily-store.js";
 import { HttpError, json, readJsonBody, withErrors } from "./http.js";
-import { aiRevealAnswer, defaultJudgeDeps, judgeRejectionMessage, judgeUnlisted, type JudgeDeps } from "./judge.js";
+import { aiRevealAnswer, defaultJudgeDeps, judgeRejectionMessage, judgeSuggestion, judgeUnlisted, type JudgeDeps } from "./judge.js";
 import { cleanNickname } from "./names.js";
 import { logRejectedAnswer } from "./rejections.js";
 import { getTierStore, type TierStore } from "./tier-store.js";
@@ -205,8 +205,9 @@ export async function answer(body: Record<string, unknown>, deps: DailyDeps): Pr
         await logRejectedAnswer({ promptId: prompt.id, raw, reason: "not_in_bank", mode: "daily" });
         return { status: "rejected", message: judgeRejectionMessage(verdict.reason, DAILY_MESSAGES.rejected) };
       }
-      // A bank answer worded differently: recommend it, never lock it unasked.
-      if (verdict.kind === "bank" && body.confirm !== true) return { status: "confirm", suggestion: verdict.answer.canonical };
+      // A different wording or spelling than typed: recommend it, never lock it unasked.
+      const suggestion = judgeSuggestion(raw, verdict);
+      if (suggestion && body.confirm !== true) return { status: "confirm", suggestion };
       // Re-read: the round may have been settled while the judge was thinking.
       const fresh = await loadAttempt(store, attempt.id);
       const freshRound = fresh.rounds[pt.i];

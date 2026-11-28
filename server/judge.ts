@@ -73,6 +73,20 @@ export type JudgeResult =
   | { kind: "accepted"; canonical: string; reference: string; cached: boolean }
   | { kind: "rejected"; reason: "closed_set" | "disabled" | "too_short" | "invalid" | "rate_limited" | "error" };
 
+/**
+ * What to ask "Did you mean …?" about before locking a judge ruling, or null to
+ * lock it as typed. The rule: anything locked must be what the player typed
+ * (an exact answer or alias) or something they confirmed.
+ *  - The judge recognised a bank answer: always a different wording, so ask.
+ *  - The judge accepted an unlisted answer under a different spelling ("Elishaba"
+ *    → "Elisheba"): ask. Same spelling (case/punctuation aside): lock as typed.
+ */
+export function judgeSuggestion(raw: string, verdict: JudgeResult): string | null {
+  if (verdict.kind === "bank") return verdict.answer.canonical;
+  if (verdict.kind === "accepted" && normalizeAnswer(raw) !== normalizeAnswer(verdict.canonical)) return verdict.canonical;
+  return null;
+}
+
 /** What a player sees for an AI-accepted answer. */
 export function aiRevealAnswer(canonical: string, reference: string): RevealAnswer {
   return { canonical, tier: JUDGE_TIER, points: pointsForTier(JUDGE_TIER), reference, aiJudged: true };

@@ -231,8 +231,28 @@ h2 {
   from { translate: 0 0; }
   to { translate: calc(-12 * var(--px)) calc(5 * var(--px)); }
 }
+/* Deep Cut, wide screens: a slowly drifting station and a rare shooting star. */
+.deep-station {
+  animation: deep-station 40s steps(40) infinite alternate;
+}
+@keyframes deep-station {
+  from { translate: 0 0; }
+  to { translate: calc(14 * var(--px)) calc(-3 * var(--px)); }
+}
+.deep-shooting {
+  rotate: 14deg;
+  opacity: 0;
+  animation: deep-shooting 11s 2s linear infinite;
+}
+@keyframes deep-shooting {
+  0% { opacity: 0; translate: 0 0; }
+  2% { opacity: 1; }
+  12%, 100% { opacity: 0; translate: 34vw 10vh; }
+}
 @media (prefers-reduced-motion: reduce) {
   .space-comet { animation: none; }
+  .deep-station { animation: none; }
+  .deep-shooting { animation: none; opacity: 0; }
 }
 
 /* ───────── open sky + edge of space (src/game/climb/sky.tsx) ───────── */

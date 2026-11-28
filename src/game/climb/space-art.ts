@@ -616,3 +616,32 @@ export const SPARKLE_TINTS: Palette[] = [
   { W: "#ffe6f6", Y: "#ffffff", b: "#ff8ad8", a: "#7a2a72" },
   { W: "#f0e6ff", Y: "#ffffff", b: "#b48cff", a: "#4a2f92" },
 ];
+
+/**
+ * A small space station for the wide (projector) view of Deep Cut: a lit hull
+ * with a red beacon, two solar wings on struts, and a docking ring below.
+ */
+export const SPACE_STATION = [
+  "..............H..............",
+  "..............h..............",
+  "PPPPPPP.......h.......PPPPPPP",
+  "PpPpPpP.....kkkkk.....PpPpPpP",
+  "PPPPPPPssssskwwwksssssPPPPPPP",
+  "PpPpPpP.....kwLwk.....PpPpPpP",
+  "PPPPPPP.....kwwwk.....PPPPPPP",
+  "..............k..............",
+  "...........ggggggg...........",
+  "..........g.......g..........",
+  "...........ggggggg...........",
+] as const;
+export const SPACE_STATION_COLORS: Palette = {
+  P: "#24346f",
+  p: "#4f6fc4",
+  s: "#8f93b8",
+  k: "#6c7099",
+  w: "#d9dbee",
+  L: "#ffd866",
+  H: "#ff6b6b",
+  h: "#8f93b8",
+  g: "#5fb8a8",
+};

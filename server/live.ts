@@ -36,7 +36,7 @@ import { BOT_TEAM, addBots, botsAnswer, visibleSubs } from "./live-bots.js";
 import { getBroadcaster, type Broadcaster } from "./live-broadcast.js";
 import { ROOM_TTL_MS, getLiveStore, type LivePlayer, type LiveRoom, type LiveStore, type LiveSubmission, type RoomPatch } from "./live-store.js";
 import { cleanNickname, cleanTeamName } from "./names.js";
-import { aiRevealAnswer, defaultJudgeDeps, judgeRejectionMessage, judgeUnlisted, type JudgeDeps } from "./judge.js";
+import { aiRevealAnswer, defaultJudgeDeps, judgeRejectionMessage, judgeSuggestion, judgeUnlisted, type JudgeDeps } from "./judge.js";
 import type { VerdictStatus } from "./judge-store.js";
 import { logRejectedAnswer } from "./rejections.js";
 import { MemoryTierStore, getTierStore, type TierOverrides, type TierStore } from "./tier-store.js";
@@ -722,8 +722,9 @@ export async function answer(body: Record<string, unknown>, deps: LiveDeps): Pro
         await logRejectedAnswer({ promptId: prompt.id, raw, reason: "not_in_bank", mode: "live" });
         return { status: "rejected", message: judgeRejectionMessage(verdict.reason, LIVE_MESSAGES.rejected) };
       }
-      // The judge recognised a bank answer worded differently: recommend it, never lock it unasked.
-      if (verdict.kind === "bank" && body.confirm !== true) return { status: "confirm", suggestion: verdict.answer.canonical };
+      // A different wording or spelling than typed: recommend it, never lock it unasked.
+      const suggestion = judgeSuggestion(raw, verdict);
+      if (suggestion && body.confirm !== true) return { status: "confirm", suggestion };
       // The judge can take a few seconds: make sure the prompt was not revealed meanwhile.
       const fresh = await loadRoom(store, room.id);
       if (fresh.phase !== "question" || fresh.roundIndex !== room.roundIndex || !isOpen(fresh, deps.now())) {
