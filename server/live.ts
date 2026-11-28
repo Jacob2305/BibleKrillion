@@ -32,7 +32,7 @@ import { allPrompts, getPrompt, matchPrompt, publicPrompt, revealFor } from "./b
 import { MAX_ANSWER_LENGTH, SUBMIT_GRACE_MS, promptSeconds } from "./config.js";
 import { HttpError, json, readJsonBody, withErrors } from "./http.js";
 import { EVENT_PROMPT_IDS } from "./event-set.js";
-import { BOT_TEAM, addBots, botsAnswer, visibleSubs } from "./live-bots.js";
+import { BOT_NAMES, BOT_TEAM, addBots, botsAnswer, visibleSubs } from "./live-bots.js";
 import { getBroadcaster, type Broadcaster } from "./live-broadcast.js";
 import { ROOM_TTL_MS, getLiveStore, type LivePlayer, type LiveRoom, type LiveStore, type LiveSubmission, type RoomPatch } from "./live-store.js";
 import { cleanNickname, cleanTeamName } from "./names.js";
@@ -500,6 +500,22 @@ export async function host(body: Record<string, unknown>, deps: LiveDeps): Promi
       break;
     }
 
+    case "reorder": {
+      // The host drags the prompts into the order they want, before starting.
+      requirePhase("lobby");
+      const ids = body.promptIds;
+      const current = room.promptIds;
+      const isPermutation =
+        Array.isArray(ids) &&
+        ids.length === current.length &&
+        ids.every((id) => typeof id === "string") &&
+        new Set(ids).size === ids.length &&
+        [...ids].sort().join("|") === [...current].sort().join("|");
+      if (!isPermutation) throw new HttpError(400, "That isn't a new order of this room's prompts.");
+      await change({ promptIds: ids as string[] });
+      break;
+    }
+
     case "start": {
       const next = room.roundIndex + 1;
       requirePhase("lobby", "reveal", "leaderboard");
@@ -813,7 +829,7 @@ const defaultDeps: LiveDeps = {
   broadcaster: getBroadcaster,
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   tiers: getTierStore,
-  bots: 2,
+  bots: BOT_NAMES.length, // every name in server/live-bots.ts joins each hosted room
 };
 
 export function createLiveHandler(deps: LiveDeps = defaultDeps) {

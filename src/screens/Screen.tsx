@@ -424,7 +424,19 @@ function ClimbView({ snap, climb }: { snap: LiveSnapshot; climb: StagedClimb }) 
   );
 }
 
-/** One tier's guesses as small floating boxes; older (lower) tiers shrink and fade. */
+/** Names to show under a guess: a few, then "+N". */
+function finderLine(names: readonly string[], max = 3): string {
+  return names.length <= max ? names.join(" · ") : `${names.slice(0, max).join(" · ")} +${names.length - max}`;
+}
+
+/** Older tiers keep this many guesses (most given first), then "+N more". */
+const OLDER_TIER_MAX = 8;
+
+/**
+ * One tier's guesses as small floating boxes. The newest tier is the big one;
+ * it gets more compact as it fills up (a 30-player room can give 15+ different
+ * answers in Plankton). Older (lower) tiers collapse to one line of small chips.
+ */
 function FloatingTier({
   tier,
   newest,
@@ -439,24 +451,53 @@ function FloatingTier({
   finders: Record<string, string[]>;
 }) {
   const sorted = [...answers].sort((a, b) => (counts[b.canonical] ?? 0) - (counts[a.canonical] ?? 0) || a.canonical.localeCompare(b.canonical));
+  const many = sorted.length > 6;
+  const crowd = sorted.length > 12;
+
+  if (!newest) {
+    const kept = sorted.slice(0, OLDER_TIER_MAX);
+    const rest = sorted.length - kept.length;
+    return (
+      <section className="climb-rise flex max-w-full flex-col items-end gap-1.5 opacity-55 transition-opacity duration-700">
+        <TierBadge tier={tier} />
+        <ul className="flex flex-wrap justify-end gap-1.5">
+          {kept.map((a) => (
+            <li key={a.canonical} className={`rounded-lg border-2 bg-night-950/90 px-2 py-0.5 text-base ${TIER_STYLE[tier].row} max-w-[16rem]`}>
+              <span className="flex items-baseline gap-2">
+                <span className="truncate font-semibold">{a.canonical}</span>
+                <span className="shrink-0 font-mono text-cloud-50/70 tabular-nums">×{counts[a.canonical]}</span>
+              </span>
+            </li>
+          ))}
+          {rest > 0 && <li className="rounded-lg bg-night-950/80 px-2 py-0.5 text-base text-cloud-50/70">+{rest} more</li>}
+        </ul>
+      </section>
+    );
+  }
+
+  const text = crowd ? "text-xl" : many ? "text-2xl" : "text-3xl";
+  const box = crowd ? "max-w-[20rem] px-2.5 py-0.5" : many ? "max-w-[26rem] px-3 py-1" : "max-w-[34rem] px-3 py-1";
   return (
-    <section className={`climb-rise flex max-w-full flex-col items-end gap-2 transition-opacity duration-700 ${newest ? "" : "opacity-60"}`}>
+    <section className="climb-rise flex max-w-full flex-col items-end gap-2 transition-opacity duration-700">
       <TierBadge tier={tier} size="lg" />
-      <ul className="flex flex-wrap justify-end gap-2">
-        {sorted.map((a, i) => (
-          <li
-            key={a.canonical}
-            className={`animate-rise rounded-xl border-2 bg-night-950/90 px-3 py-1 shadow-[4px_4px_0_rgba(0,0,0,0.4)] ${TIER_STYLE[tier].row} ${newest ? "max-w-[34rem]" : "max-w-[22rem]"}`}
-            style={{ animationDelay: `${i * 90}ms` }}
-          >
-            <div className={`flex items-baseline gap-3 ${newest ? "text-3xl" : "text-xl"}`}>
-              <span className="truncate font-semibold">{a.canonical}</span>
-              <span className="shrink-0 font-mono text-cloud-50/70 tabular-nums">×{counts[a.canonical]}</span>
-            </div>
-            {newest && finders[a.canonical] && <p className="truncate text-lg text-cloud-50/70">{finders[a.canonical]!.join(" · ")}</p>}
-            {newest && a.gemNote && <p className="line-clamp-2 text-lg text-amber-100">💎 {a.gemNote}</p>}
-          </li>
-        ))}
+      <ul className={`flex flex-wrap justify-end ${crowd ? "gap-1.5" : "gap-2"}`}>
+        {sorted.map((a, i) => {
+          const names = finders[a.canonical];
+          return (
+            <li
+              key={a.canonical}
+              className={`animate-rise rounded-xl border-2 bg-night-950/90 shadow-[4px_4px_0_rgba(0,0,0,0.4)] ${TIER_STYLE[tier].row} ${box}`}
+              style={{ animationDelay: `${Math.min(i, 12) * 70}ms` }}
+            >
+              <div className={`flex items-baseline gap-3 ${text}`}>
+                <span className="truncate font-semibold">{a.canonical}</span>
+                <span className="shrink-0 font-mono text-cloud-50/70 tabular-nums">×{counts[a.canonical]}</span>
+              </div>
+              {names && names.length > 0 && !crowd && <p className="truncate text-lg text-cloud-50/70">{finderLine(names, many ? 2 : 3)}</p>}
+              {a.gemNote && <p className={`text-amber-100 ${crowd ? "line-clamp-1 text-base" : "line-clamp-2 text-lg"}`}>💎 {a.gemNote}</p>}
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
@@ -527,7 +568,7 @@ const DEMO_ANSWERS: { canonical: string; tier: AnswerTier; count: number; finder
     [
       ["Yellow", "plankton"], ["Purple", "plankton"], ["Orange", "plankton"], ["Pink", "plankton"], ["Black", "plankton"], ["White", "plankton"],
       ["Navy", "too_clever"], ["Beige", "too_clever"], ["Lavender", "too_clever"], ["Turquoise", "too_clever"],
-      ["Magenta", "schooler"], ["Indigo", "schooler"], ["Olive", "schooler"], ["Coral", "schooler"], ["Crimson", "schooler"], ["Amber", "schooler"], ["Lime", "schooler"],
+      ["Magenta", "schooler"], ["Indigo", "schooler"], ["Khaki", "schooler"], ["Coral", "schooler"], ["Crimson", "schooler"], ["Amber", "schooler"], ["Lime", "schooler"],
       ["Chartreuse", "rare"], ["Ochre", "rare"], ["Periwinkle", "rare"], ["Mauve", "rare"], ["Sienna", "rare"], ["Umber", "rare"], ["Taupe", "rare"],
       ["Celadon", "deep_cut"], ["Gamboge", "deep_cut"], ["Smaragdine", "deep_cut"], ["Falu", "deep_cut"], ["Glaucous", "deep_cut"], ["Xanadu", "deep_cut"],
       ["Coquelicot", "deep_cut"], ["Wenge", "deep_cut"], ["Zaffre", "deep_cut"], ["Caput mortuum", "deep_cut"], ["Isabelline", "deep_cut"], ["Eburnean", "deep_cut"],
@@ -535,18 +576,51 @@ const DEMO_ANSWERS: { canonical: string; tier: AnswerTier; count: number; finder
   ).map(([canonical, tier]) => ({ canonical, tier: tier as AnswerTier, count: 0 })),
 ];
 
-/** /dev/climb?room=1 (dev only): the projector's staged room climb with made-up answers. ?room=none: nobody scored. */
+/** A 27-player room: many different answers per tier, popular ones ×N (made-up colours, never bank answers). */
+const CROWD_NAMES = ["Sam", "Alex", "Jo", "Kai", "Mia", "Leo", "Ava", "Max", "Zoe", "Ben"];
+const CROWD_DEMO_ANSWERS: typeof DEMO_ANSWERS = [
+  ...(
+    [
+      ["Red", 5], ["Blue", 4], ["Green", 3], ["Yellow", 2], ["Purple", 2], ["Orange", 2], ["Pink", 1], ["Black", 1], ["White", 1],
+      ["Brown", 1], ["Grey", 1], ["Gold", 1], ["Silver", 1], ["Cyan", 1], ["Tan", 1],
+    ] as const
+  ).map(([canonical, count]) => ({ canonical, tier: "plankton" as AnswerTier, count })),
+  ...(["Navy", "Beige", "Lavender"] as const).map((canonical, i) => ({ canonical, tier: "too_clever" as AnswerTier, count: 3 - i })),
+  ...(
+    [["Magenta", 3], ["Indigo", 2], ["Khaki", 2], ["Coral", 1], ["Crimson", 1], ["Amber", 1], ["Lime", 1], ["Scarlet", 1]] as const
+  ).map(([canonical, count]) => ({ canonical, tier: "schooler" as AnswerTier, count })),
+  ...(["Chartreuse", "Ochre", "Periwinkle", "Mauve", "Sienna"] as const).map((canonical, i) => ({
+    canonical,
+    tier: "rare" as AnswerTier,
+    count: i === 0 ? 2 : 1,
+    finders: CROWD_NAMES.slice(i, i + (i === 0 ? 2 : 1)),
+  })),
+  ...(["Celadon", "Gamboge", "Smaragdine"] as const).map((canonical, i) => ({
+    canonical,
+    tier: "deep_cut" as AnswerTier,
+    count: 1,
+    finders: [CROWD_NAMES[5 + i]!],
+  })),
+  { canonical: "Fulvous", tier: "one_in_a_million", count: 1, finders: ["Ben"], gemNote: "Sample gem note: a dull brownish-yellow, shown here to preview how gem notes look." },
+];
+
+/**
+ * /dev/climb?room=1 (dev only): the projector's staged room climb with made-up answers.
+ * ?room=none: nobody scored. ?room=crowd: a 27-player room with many answers per tier.
+ */
 export function ProjectorRevealDemo({ nobody = false, initialView = "climb" }: { nobody?: boolean; initialView?: "climb" | "answers" }) {
   const [run, setRun] = useState(0);
   const [view, setView] = useState<"climb" | "answers">(initialView);
-  const answers = nobody ? [] : DEMO_ANSWERS;
+  const crowd = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("room") === "crowd";
+  const answers = nobody ? [] : crowd ? CROWD_DEMO_ANSWERS : DEMO_ANSWERS;
+  const players = crowd ? 27 : 24;
   const snap = {
     code: "DEMO",
     phase: "reveal",
     view,
     roundIndex: run,
     roundCount: 12,
-    playerCount: 24,
+    playerCount: players,
     reveal: {
       reveal: {
         promptId: "demo",
@@ -555,8 +629,8 @@ export function ProjectorRevealDemo({ nobody = false, initialView = "climb" }: {
       },
       counts: Object.fromEntries(answers.filter((a) => a.count).map((a) => [a.canonical, a.count])),
       finders: Object.fromEntries(answers.filter((a) => a.finders).map((a) => [a.canonical, a.finders!])),
-      answered: nobody ? 5 : 24,
-      players: 24,
+      answered: nobody ? 5 : players,
+      players,
     },
   } as unknown as LiveSnapshot;
   const r = snap.reveal!;

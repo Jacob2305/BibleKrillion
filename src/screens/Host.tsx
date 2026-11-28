@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
 import { APP_NAME } from "../../lib/game/brand";
 import { normalizeRoomCode } from "../../lib/game/live";
 import type { LiveHostInfo, LiveHostOp, LiveHostResponse, LiveSnapshot } from "../../lib/game/live-types";
@@ -640,24 +640,96 @@ function AiAnswers({ host, act }: { host: LiveHostInfo; act: Act }) {
 
 function Prompts({ snap, host, act, busy, answers }: { snap: LiveSnapshot; host: LiveHostInfo; act: Act; busy: LiveHostOp | null; answers: AnswersFor }) {
   const [expanded, setExpanded] = useState<number | null>(null);
+  // Lobby only: the order shown while a reorder is on its way (the server's reply replaces it).
+  const [pending, setPending] = useState<string[] | null>(null);
+  const [dragging, setDragging] = useState<number | null>(null);
+  const [dropAt, setDropAt] = useState<number | null>(null);
+  const lobby = snap.phase === "lobby" && !snap.closed;
+
+  const byId = new Map(host.prompts.map((p) => [p.id, p]));
+  const shown = pending ? pending.map((id, index) => ({ ...byId.get(id)!, index })).filter((p) => p.id) : host.prompts;
+
+  const move = (from: number, to: number) => {
+    if (from === to || to < 0 || to >= shown.length) return;
+    const ids = shown.map((p) => p.id);
+    const [moved] = ids.splice(from, 1);
+    ids.splice(to, 0, moved!);
+    setExpanded(null);
+    setPending(ids);
+    void act("reorder", { promptIds: ids }).finally(() => setPending(null));
+  };
+
+  const endDrag = () => {
+    setDragging(null);
+    setDropAt(null);
+  };
+
   return (
     <details className="rounded-3xl bg-night-950/75 ring-2 ring-white/10" open={snap.phase === "lobby"}>
       <summary className="cursor-pointer px-5 py-4 font-semibold focus-visible:outline-2 focus-visible:outline-sun-300">
         Prompts
       </summary>
       <ol className="space-y-1 px-5 pb-4">
-        {host.prompts.map((p) => {
+        {shown.map((p) => {
           const done = p.index < snap.roundIndex || (p.index === snap.roundIndex && snap.phase !== "question");
           const current = p.index === snap.roundIndex && snap.phase === "question";
           const upcoming = p.index > snap.roundIndex && snap.phase !== "final" && !snap.closed;
           const open = expanded === p.index;
+          const dropHere = lobby && dragging !== null && dropAt === p.index && dragging !== p.index;
+          const dropBefore = dropHere && dragging! > p.index;
+          const dropAfter = dropHere && dragging! < p.index;
           return (
-            <li key={p.index} className="rounded-xl px-2 py-1.5">
+            <li
+              key={p.id}
+              draggable={lobby && !open}
+              onDragStart={(e: DragEvent<HTMLLIElement>) => {
+                if (!lobby) return;
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("text/plain", String(p.index));
+                setDragging(p.index);
+              }}
+              onDragOver={(e) => {
+                if (dragging === null) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                if (dropAt !== p.index) setDropAt(p.index);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (dragging !== null) move(dragging, p.index);
+                endDrag();
+              }}
+              onDragEnd={endDrag}
+              className={`rounded-xl px-2 py-1.5 ${lobby && !open ? "cursor-grab active:cursor-grabbing" : ""} ${dragging === p.index ? "opacity-40" : ""} ${dropBefore ? "shadow-[0_-3px_0_0_var(--color-sun-300)]" : ""} ${dropAfter ? "shadow-[0_3px_0_0_var(--color-sun-300)]" : ""}`}
+            >
               <div className="flex items-center gap-3">
                 <span className="w-6 text-right font-mono text-cloud-50/50 tabular-nums">{p.index + 1}</span>
-                <span className="w-5 text-center" aria-hidden="true">
-                  {done ? "✓" : current ? "▶" : ""}
-                </span>
+                {lobby ? (
+                  <span className="flex flex-col">
+                    <button
+                      type="button"
+                      aria-label={`Move up: ${p.prompt}`}
+                      disabled={p.index === 0 || busy === "reorder"}
+                      onClick={() => move(p.index, p.index - 1)}
+                      className="rounded px-1 text-xs leading-none text-cloud-50/60 hover:text-cloud-50 disabled:opacity-20"
+                    >
+                      ▲
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Move down: ${p.prompt}`}
+                      disabled={p.index === shown.length - 1 || busy === "reorder"}
+                      onClick={() => move(p.index, p.index + 1)}
+                      className="rounded px-1 text-xs leading-none text-cloud-50/60 hover:text-cloud-50 disabled:opacity-20"
+                    >
+                      ▼
+                    </button>
+                  </span>
+                ) : (
+                  <span className="w-5 text-center" aria-hidden="true">
+                    {done ? "✓" : current ? "▶" : ""}
+                  </span>
+                )}
                 <span className={`min-w-0 flex-1 ${done ? "text-cloud-50/50" : ""}`}>
                   {p.prompt}
                   <span className="ml-2 text-xs text-cloud-50/40">{p.category}</span>
@@ -673,7 +745,7 @@ function Prompts({ snap, host, act, busy, answers }: { snap: LiveSnapshot; host:
                 {upcoming && (
                   <button
                     type="button"
-                    disabled={busy === "swap"}
+                    disabled={busy === "swap" || pending !== null}
                     onClick={() => {
                       if (open) setExpanded(null);
                       void act("swap", { index: p.index });

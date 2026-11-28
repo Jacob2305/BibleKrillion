@@ -191,6 +191,7 @@ export type LiveHostOp =
   | "state"
   | "team"
   | "view"
+  | "reorder"
   | "settings"
   | "swap"
   | "start"

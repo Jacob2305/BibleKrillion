@@ -459,7 +459,7 @@ describe("test bots", () => {
     const env = setup({ bots: 2 });
     const { data } = await env.create();
     expect(data.snapshot.playerCount).toBe(2);
-    expect(data.snapshot.players?.map((p) => p.nickname)).toEqual([...BOT_NAMES]);
+    expect(data.snapshot.players?.map((p) => p.nickname)).toEqual(BOT_NAMES.slice(0, 2));
     expect(data.host.players.every((p) => p.bot)).toBe(true);
     expect((await env.create({ bots: false })).data.snapshot.playerCount).toBe(0);
   });
@@ -676,5 +676,48 @@ describe("projector view after a reveal", () => {
     env.clock.t += 30_000;
     await env.hostOp(room.hostToken, "reveal");
     expect((await env.hostOp(room.hostToken, "view", { view: "podium" })).status).toBe(400);
+  });
+});
+
+describe("reordering prompts", () => {
+  it("the host can reorder the prompts in the lobby, and the game starts with the new first one", async () => {
+    const env = setup();
+    const { data: room } = await env.create();
+    const ids = room.host.prompts.map((p) => p.id);
+    const reordered = [ids[3]!, ...ids.filter((_, i) => i !== 3).reverse()];
+    const { status, data } = await env.hostOp(room.hostToken, "reorder", { promptIds: reordered });
+    expect(status).toBe(200);
+    expect(data.host.prompts.map((p) => p.id)).toEqual(reordered);
+    expect(env.sent.at(-1)!.snapshot.roundCount).toBe(ids.length);
+
+    await env.join(room.snapshot.code, "Ann");
+    const { data: started } = await env.hostOp(room.hostToken, "start");
+    expect(started.snapshot.question!.prompt.id).toBe(reordered[0]);
+  });
+
+  it("rejects anything that isn't an exact reordering of the room's prompts", async () => {
+    const env = setup();
+    const { data: room } = await env.create();
+    const ids = room.host.prompts.map((p) => p.id);
+    const bad = [
+      ids.slice(1), // one missing
+      [...ids, "ot-books"], // an extra
+      [ids[0]!, ...ids.slice(0, -1)], // a duplicate
+      [...ids.slice(0, -1), "ot-books"], // a stranger swapped in
+      "not a list",
+      [...ids.slice(0, -1), 42],
+    ];
+    for (const promptIds of bad) {
+      expect((await env.hostOp(room.hostToken, "reorder", { promptIds })).status).toBe(400);
+    }
+    const { data } = await env.hostOp(room.hostToken, "state");
+    expect(data.host.prompts.map((p) => p.id)).toEqual(ids);
+  });
+
+  it("is lobby only", async () => {
+    const env = setup();
+    const { room } = await startedRoom(env);
+    const ids = room.host.prompts.map((p) => p.id);
+    expect((await env.hostOp(room.hostToken, "reorder", { promptIds: [...ids].reverse() })).status).toBe(409);
   });
 });
