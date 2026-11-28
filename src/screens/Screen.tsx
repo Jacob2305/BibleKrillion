@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { normalizeRoomCode } from "../../lib/game/live";
 import type { LiveSnapshot } from "../../lib/game/live-types";
 import type { RevealAnswer } from "../../lib/game/api-types";
@@ -133,7 +133,7 @@ function Projector({ code, onGone }: { code: string; onGone: () => void }) {
   }
 
   return (
-    <Stage world={{ ...climb.world, notes }}>
+    <Stage world={{ ...climb.world, notes: snap.phase === "reveal" && snap.view === "answers" ? undefined : notes }}>
       <div className="flex h-full flex-col">
         <header className="flex items-center justify-between gap-6 text-2xl text-cloud-50/70">
           <span className="font-display font-bold text-sun-300">{APP_NAME}</span>
@@ -237,66 +237,140 @@ function RevealScreen({ snap, climb }: { snap: LiveSnapshot; climb: StagedClimb 
   return snap.view === "answers" ? <AnswerBoard snap={snap} /> : <ClimbView snap={snap} climb={climb} />;
 }
 
-/** Every answer, deepest tier first, plus what nobody said. Shown when the host picks "All answers". */
+/**
+ * The whole answer bank for the prompt, deepest tier first, shown when the host picks
+ * "All answers". Answers players gave stand out (×count, who found the deep ones); the
+ * rest are dimmed. Hover (or focus) an answer to see its reference in the bar below.
+ * The type shrinks until everything fits: a projector can't scroll.
+ */
 function AnswerBoard({ snap }: { snap: LiveSnapshot }) {
   const r = snap.reveal!;
-  const given = r.reveal.answers.filter((a) => r.counts[a.canonical]);
-  const missed = r.reveal.answers.filter((a) => !r.counts[a.canonical]);
-  let delay = 0;
+  const answers = r.reveal.answers;
+  const total = answers.length;
+  const [hovered, setHovered] = useState<RevealAnswer | null>(null);
+  // Starting size by how many answers there are; then shrink until nothing overflows.
+  const start = total <= 16 ? 40 : total <= 30 ? 34 : total <= 50 ? 30 : total <= 80 ? 26 : 22;
+  const columns = total <= 16 ? 2 : total <= 30 ? 3 : total <= 60 ? 4 : 5;
+  const boxRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    // Biggest type (from `start` down to 11px) at which every answer is inside the box.
+    // scrollWidth isn't reliable for multi-column boxes (it can report a phantom extra
+    // column), so check where the answers actually landed.
+    const fits = (px: number) => {
+      el.style.fontSize = `${px}px`;
+      const box = el.getBoundingClientRect();
+      return ![...el.querySelectorAll("li, h2")].some((item) => {
+        const r = item.getBoundingClientRect();
+        return r.right > box.right + 1 || r.bottom > box.bottom + 1;
+      });
+    };
+    const fit = () => {
+      if (fits(start)) return;
+      let lo = 11;
+      let hi = start - 1;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        if (fits(mid)) lo = mid;
+        else hi = mid - 1;
+      }
+      fits(lo);
+    };
+    fit();
+    // Again once the pixel fonts load (the fallback font is wider) and when the window changes size.
+    let live = true;
+    void document.fonts?.ready.then(() => live && fit());
+    window.addEventListener("resize", fit);
+    return () => {
+      live = false;
+      window.removeEventListener("resize", fit);
+    };
+  }, [start, answers]);
+  const given = answers.filter((a) => r.counts[a.canonical]).length;
+
   return (
-    <div className="relative flex h-full min-h-0 flex-col gap-6">
+    <div className="relative flex h-full min-h-0 flex-col gap-4">
       {/* dim the scene so the answers read well */}
-      <div aria-hidden="true" className="pointer-events-none fixed inset-0 -z-10 bg-night-950/55" />
+      <div aria-hidden="true" className="pointer-events-none fixed inset-0 -z-10 bg-night-950/70" />
       <div className="flex items-baseline justify-between gap-6">
         <h1 className="font-display text-5xl font-bold text-balance">{r.reveal.prompt}</h1>
         <p className="shrink-0 text-2xl text-cloud-50/70">
-          {r.answered} of {r.players} answered
+          {given} of {total} found
         </p>
       </div>
-      {given.length === 0 && (
-        <p className="pixel-panel mx-auto mt-[12vh] px-10 py-6 text-center text-5xl text-cloud-50/90">
-          {r.answered > 0 ? "Nobody found a right answer this time." : "Nobody locked in an answer."}
-        </p>
-      )}
-      <div className="min-h-0 flex-1 columns-3 gap-6 overflow-hidden">
+      <div
+        ref={boxRef}
+        // No transitions in here: the reduced-motion CSS gives everything a tiny transition on
+        // every property, which would delay font-size changes and break the fitting above.
+        className="min-h-0 flex-1 gap-5 overflow-hidden [&,&_*]:transition-none"
+        style={{ columnCount: columns, columnFill: "auto", fontSize: `${start}px`, lineHeight: 1.2 }}
+      >
         {DEEPEST_FIRST.map((tier) => {
-          const answers = given.filter((a) => a.tier === tier);
-          if (answers.length === 0) return null;
+          const list = answers.filter((a) => a.tier === tier);
+          if (list.length === 0) return null;
           return (
-            <section key={tier} className="mb-5 break-inside-avoid">
-              <h2 className="mb-2 flex items-center gap-3">
+            <section key={tier} aria-label={TIER_INFO[tier].label} className="mb-[0.7em]">
+              <h2 className="mb-[0.3em] flex items-center gap-2" style={{ fontSize: "0.8em", breakAfter: "avoid-column" }}>
                 <TierBadge tier={tier} size="lg" />
-                <span className="text-xl text-cloud-50/50">{TIER_INFO[tier].points} pts</span>
+                <span className="text-cloud-50/60">{TIER_INFO[tier].points} pts</span>
               </h2>
-              <ul className="space-y-2">
-                {answers.map((a) => (
-                  <li
-                    key={a.canonical}
-                    className={`animate-rise rounded-2xl border-2 bg-night-950/80 px-4 py-2 ${TIER_STYLE[tier].row}`}
-                    style={{ animationDelay: `${(delay += 120)}ms` }}
-                  >
-                    <div className="flex items-baseline justify-between gap-3 text-3xl">
-                      <span className="font-semibold">
-                        {a.canonical}
-                        {a.aiJudged && <span className="ml-3 text-xl text-sky-200">✨ AI judge</span>}
-                      </span>
-                      <span className="font-mono text-cloud-50/70 tabular-nums">×{r.counts[a.canonical]}</span>
-                    </div>
-                    {r.finders[a.canonical] && <p className="text-xl text-cloud-50/60">{r.finders[a.canonical]!.join(" · ")}</p>}
-                    {a.gemNote && <p className="mt-1 text-xl text-amber-100">💎 {a.gemNote}</p>}
-                  </li>
-                ))}
+              <ul className="space-y-[0.25em]">
+                {list.map((a) => {
+                  const count = r.counts[a.canonical] ?? 0;
+                  const finders = r.finders[a.canonical];
+                  return (
+                    <li
+                      key={a.canonical}
+                      tabIndex={0}
+                      title={a.reference || undefined}
+                      onMouseEnter={() => setHovered(a)}
+                      onMouseLeave={() => setHovered((h) => (h === a ? null : h))}
+                      onFocus={() => setHovered(a)}
+                      onBlur={() => setHovered((h) => (h === a ? null : h))}
+                      className={`break-inside-avoid rounded-[0.4em] border-2 px-[0.45em] py-[0.15em] outline-none focus-visible:ring-4 focus-visible:ring-sun-300 ${
+                        count
+                          ? `bg-night-950/85 ${TIER_STYLE[tier].row} hover:bg-white/15`
+                          : "border-transparent bg-night-950/40 text-cloud-50/55 hover:bg-white/10 hover:text-cloud-50"
+                      }`}
+                    >
+                      <div className="flex items-baseline justify-between gap-[0.5em]">
+                        <span className={count ? "font-semibold" : ""}>
+                          {a.canonical}
+                          {a.aiJudged && <span className="ml-[0.4em] text-sky-200" style={{ fontSize: "0.7em" }}>✨ AI</span>}
+                        </span>
+                        {count > 0 && <span className="shrink-0 font-mono text-sun-300 tabular-nums">×{count}</span>}
+                      </div>
+                      {finders && count > 0 && (
+                        <p className="text-cloud-50/65" style={{ fontSize: "0.7em" }}>
+                          {finders.join(" · ")}
+                        </p>
+                      )}
+                      {a.gemNote && (
+                        <p className="text-amber-100/90" style={{ fontSize: "0.7em" }}>
+                          💎 {a.gemNote}
+                        </p>
+                      )}
+                      {a.reference && <span className="sr-only">, {a.reference}</span>}
+                    </li>
+                  );
+                })}
               </ul>
             </section>
           );
         })}
       </div>
-      {missed.length > 0 && (
-        <p className="line-clamp-2 text-xl text-cloud-50/50">
-          <span className="font-semibold text-cloud-50/70">Nobody said: </span>
-          {missed.map((a) => `${a.canonical}${a.tier === "one_in_a_million" ? " 💎" : ""}`).join(" · ")}
-        </p>
-      )}
+      {/* the hovered answer's reference */}
+      <p aria-hidden="true" className="pixel-panel min-h-[3.25rem] px-5 py-2 text-2xl">
+        {hovered ? (
+          <>
+            <span className="font-semibold">{hovered.canonical}</span>
+            {hovered.reference && <span className="text-sun-300"> · {hovered.reference}</span>}
+          </>
+        ) : (
+          <span className="text-cloud-50/0">·</span>
+        )}
+      </p>
     </div>
   );
 }
@@ -448,12 +522,23 @@ const DEMO_ANSWERS: { canonical: string; tier: AnswerTier; count: number; finder
     finders: ["Sam"],
     gemNote: "Sample gem note: a dull brownish-yellow, shown here to preview how gem notes look.",
   },
+  // Answers nobody gave (dimmed on the "All answers" board), to preview a dense board.
+  ...(
+    [
+      ["Yellow", "plankton"], ["Purple", "plankton"], ["Orange", "plankton"], ["Pink", "plankton"], ["Black", "plankton"], ["White", "plankton"],
+      ["Navy", "too_clever"], ["Beige", "too_clever"], ["Lavender", "too_clever"], ["Turquoise", "too_clever"],
+      ["Magenta", "schooler"], ["Indigo", "schooler"], ["Olive", "schooler"], ["Coral", "schooler"], ["Crimson", "schooler"], ["Amber", "schooler"], ["Lime", "schooler"],
+      ["Chartreuse", "rare"], ["Ochre", "rare"], ["Periwinkle", "rare"], ["Mauve", "rare"], ["Sienna", "rare"], ["Umber", "rare"], ["Taupe", "rare"],
+      ["Celadon", "deep_cut"], ["Gamboge", "deep_cut"], ["Smaragdine", "deep_cut"], ["Falu", "deep_cut"], ["Glaucous", "deep_cut"], ["Xanadu", "deep_cut"],
+      ["Coquelicot", "deep_cut"], ["Wenge", "deep_cut"], ["Zaffre", "deep_cut"], ["Caput mortuum", "deep_cut"], ["Isabelline", "deep_cut"], ["Eburnean", "deep_cut"],
+    ] as const
+  ).map(([canonical, tier]) => ({ canonical, tier: tier as AnswerTier, count: 0 })),
 ];
 
 /** /dev/climb?room=1 (dev only): the projector's staged room climb with made-up answers. ?room=none: nobody scored. */
-export function ProjectorRevealDemo({ nobody = false }: { nobody?: boolean }) {
+export function ProjectorRevealDemo({ nobody = false, initialView = "climb" }: { nobody?: boolean; initialView?: "climb" | "answers" }) {
   const [run, setRun] = useState(0);
-  const [view, setView] = useState<"climb" | "answers">("climb");
+  const [view, setView] = useState<"climb" | "answers">(initialView);
   const answers = nobody ? [] : DEMO_ANSWERS;
   const snap = {
     code: "DEMO",
@@ -466,9 +551,9 @@ export function ProjectorRevealDemo({ nobody = false }: { nobody?: boolean }) {
       reveal: {
         promptId: "demo",
         prompt: "Sample prompt: name a colour",
-        answers: [...answers].reverse().map((a) => ({ canonical: a.canonical, tier: a.tier, points: TIER_INFO[a.tier].points, reference: "", gemNote: a.gemNote })),
+        answers: [...answers].reverse().map((a, i) => ({ canonical: a.canonical, tier: a.tier, points: TIER_INFO[a.tier].points, reference: `Sample ${i + 1}:1`, gemNote: a.gemNote })),
       },
-      counts: Object.fromEntries(answers.map((a) => [a.canonical, a.count])),
+      counts: Object.fromEntries(answers.filter((a) => a.count).map((a) => [a.canonical, a.count])),
       finders: Object.fromEntries(answers.filter((a) => a.finders).map((a) => [a.canonical, a.finders!])),
       answered: nobody ? 5 : 24,
       players: 24,
@@ -480,7 +565,7 @@ export function ProjectorRevealDemo({ nobody = false }: { nobody?: boolean }) {
   const climb = useStagedClimb({ stops: ANSWER_TIERS.filter((t) => reached[t]), active: true, roundKey: run, holdMs: () => 2000 });
   const notes = Object.fromEntries(Object.entries(reached).map(([t, n]) => [t, `${n} ${n === 1 ? "climber" : "climbers"}`]));
   return (
-    <Stage world={{ ...climb.world, notes }}>
+    <Stage world={{ ...climb.world, notes: snap.phase === "reveal" && snap.view === "answers" ? undefined : notes }}>
       <div className="flex h-full flex-col">
         <header className="flex items-center justify-between text-2xl text-cloud-50/70">
           <span className="font-display font-bold text-sun-300">{APP_NAME}</span>

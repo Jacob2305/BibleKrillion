@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { APP_NAME } from "../../lib/game/brand";
 import { normalizeRoomCode } from "../../lib/game/live";
 import type { LiveHostInfo, LiveHostOp, LiveHostResponse, LiveSnapshot } from "../../lib/game/live-types";
@@ -17,7 +17,7 @@ import { useLiveRoom, type LiveData } from "../live/useLiveRoom";
 const ROUND_OPTIONS = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 /** New rooms play the whole event set (server/event-set.ts). */
 const DEFAULT_ROUNDS = 12;
-const SECOND_OPTIONS = [10, 15, 20, 25, 30, 40, 45, 60];
+const SECOND_OPTIONS = [10, 15, 20, 25, 30, 40, 45, 60, 75, 90, 120];
 
 interface Active {
   code: string;
@@ -448,6 +448,14 @@ function QuestionPanel({ snap, busy, act, deadline }: { snap: LiveSnapshot; busy
   const remaining = useCountdown(deadline);
   const open = remaining > 0;
   const answered = snap.answeredCount ?? 0;
+  // Time's up: reveal by itself (the server waits out the grace for answers in flight).
+  // The server also reveals on its own when everyone has answered or anyone asks after the deadline.
+  const autoRevealed = useRef<number | null>(null);
+  useEffect(() => {
+    if (open || autoRevealed.current === q.index) return;
+    autoRevealed.current = q.index;
+    void act("reveal");
+  }, [open, q.index, act]);
   return (
     <Panel title={`Prompt ${q.index + 1} of ${snap.roundCount} · ${q.prompt.category}`}>
       <p className="font-display text-2xl font-bold">{q.prompt.prompt}</p>

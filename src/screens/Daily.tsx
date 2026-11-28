@@ -75,7 +75,7 @@ function NicknameForm({ day, onStart }: { day: string; onStart: (nickname: strin
     e.preventDefault();
     const clean = name.replace(/\s+/g, " ").trim();
     if (!clean) {
-      setError("Pick a nickname so we can save your ascent.");
+      setError("Pick a name so we can save your ascent.");
       return;
     }
     onStart(Array.from(clean).slice(0, 24).join(""));
@@ -94,7 +94,7 @@ function NicknameForm({ day, onStart }: { day: string; onStart: (nickname: strin
       </div>
       <div className="space-y-2">
         <label htmlFor="nickname" className="block font-medium">
-          Your nickname
+          Your name
         </label>
         <input
           id="nickname"

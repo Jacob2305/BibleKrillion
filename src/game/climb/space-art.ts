@@ -385,8 +385,12 @@ export const GALAXY_PALETTE_DEF = {
 };
 const GALAXY_RAMPS = ramps(GALAXY_PALETTE_DEF);
 
-/** A detailed two-armed spiral seen at a tilt: bright core, dust lanes, star knots, dithered halo. */
-export function spiralGalaxy(w: number, h: number, seed: number) {
+/**
+ * A detailed spiral seen at a tilt: bright core, dust lanes, star knots, dithered halo.
+ * `arms` (default 2) and `knots` (default 70) let the Cosmos centrepiece be busier.
+ */
+export function spiralGalaxy(w: number, h: number, seed: number, opts: { arms?: number; knots?: number } = {}) {
+  const arms = opts.arms ?? 2;
   const { c, palette } = GALAXY_RAMPS;
   const rand = seeded(seed);
   const n = noise2(seed);
@@ -398,11 +402,11 @@ export function spiralGalaxy(w: number, h: number, seed: number) {
   const st = Math.sin(tilt);
   const squash = (h / w) * 1.02;
   const knots = new Map<string, string>();
-  for (let i = 0; i < 70; i++) {
+  for (let i = 0; i < (opts.knots ?? 70); i++) {
     // star knots sprinkled along the arms
-    const arm = i % 2;
+    const arm = i % arms;
     const t = 0.12 + rand() * 0.78;
-    const ang = Math.log(t * R + 1) / 0.42 + arm * Math.PI + (rand() - 0.5) * 0.25;
+    const ang = Math.log(t * R + 1) / 0.42 + (arm * 2 * Math.PI) / arms + (rand() - 0.5) * 0.25;
     const rr = t * R;
     const gx = Math.cos(ang) * rr;
     const gy = Math.sin(ang) * rr * squash;
@@ -424,11 +428,11 @@ export function spiralGalaxy(w: number, h: number, seed: number) {
       const dn = d / R;
       const theta = Math.atan2(gy, gx);
       const phase = theta - Math.log(d + 1) / 0.42;
-      const armWave = 0.5 + 0.5 * Math.cos(2 * phase);
+      const armWave = 0.5 + 0.5 * Math.cos(arms * phase);
       const rim = clamp((1.02 - dn) / 0.3);
       const arm = Math.pow(armWave, 3) * Math.exp(-dn * 1.6) * (1 - Math.exp(-dn * 9)) * rim;
       // dust lane: trailing edge of each arm
-      const lane = Math.pow(0.5 + 0.5 * Math.cos(2 * phase - 0.95), 34) * (dn > 0.1 && dn < 0.75 ? 1 : 0);
+      const lane = Math.pow(0.5 + 0.5 * Math.cos(arms * phase - 0.95), 34) * (dn > 0.1 && dn < 0.75 ? 1 : 0);
       const core = Math.exp(-(dn * dn) / 0.012);
       const bulge = Math.exp(-(dn * dn) / 0.06);
       const halo = Math.exp(-dn * 3.2) * 0.9 * rim;

@@ -12,7 +12,8 @@ export default function ClimbPreview() {
   const climb = useRevealClimb({ tier: tier ?? "miss", active: tier !== null, roundKey: run, size: stage ? "stage" : "phone" });
   // ?room=1 plays the projector's staged room climb (?room=none: nobody scored).
   const room = params.get("room");
-  if (room !== null) return <ProjectorRevealDemo nobody={room === "none"} />;
+  // &view=answers opens on the "All answers" board.
+  if (room !== null) return <ProjectorRevealDemo nobody={room === "none"} initialView={params.get("view") === "answers" ? "answers" : "climb"} />;
   // ?zone=N shows one zone of the map, still, with no HUD (for checking the art).
   const zone = params.get("zone");
   if (zone !== null) return <World target={Number(zone)} instant />;

@@ -113,7 +113,7 @@ export async function start(body: Record<string, unknown>, deps: DailyDeps): Pro
   const deviceId = body.deviceId;
   if (typeof deviceId !== "string" || !DEVICE_ID.test(deviceId)) throw new HttpError(400, "Invalid device id.");
   const nickname = cleanNickname(body.nickname);
-  if (!nickname) throw new HttpError(400, "Pick a nickname first.", "nickname");
+  if (!nickname) throw new HttpError(400, "Pick a name first.", "nickname");
 
   const day = dayKey(deps.now());
   const attempt = await deps.store().getOrCreateAttempt({ day, deviceId, nickname, promptIds: dailyPromptIds(day) });

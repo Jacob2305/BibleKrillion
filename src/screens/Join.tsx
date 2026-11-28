@@ -130,7 +130,7 @@ function JoinForm({ notice, onJoined }: { notice: string | null; onJoined: (code
     const nickname = name.replace(/\s+/g, " ").trim();
     const chosenTeam = room?.teams ? (teamChoice === NEW_TEAM ? team.replace(/\s+/g, " ").trim() : teamChoice) : "";
     if (room?.teams && !chosenTeam) return setTeamError("Name your team, or pick one above.");
-    if (!nickname) return setNameError("Pick a nickname.");
+    if (!nickname) return setNameError("Pick a name.");
     setBusy(true);
     try {
       const res = await liveApi.join(normalized, nickname, chosenTeam || undefined);
@@ -250,7 +250,7 @@ function JoinForm({ notice, onJoined }: { notice: string | null; onJoined: (code
 
       <div className="space-y-2">
         <label htmlFor="live-nickname" className="block font-medium">
-          Your nickname
+          Your name
         </label>
         <input
           id="live-nickname"

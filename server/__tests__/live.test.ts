@@ -116,6 +116,12 @@ describe("creating a room", () => {
     expect(data.snapshot).toMatchObject({ roundCount: 12, seconds: 10, teams: true });
   });
 
+  it("allows up to 120 seconds a prompt", async () => {
+    const env = setup();
+    expect((await env.create({ seconds: 120 })).data.snapshot.seconds).toBe(120);
+    expect((await env.create({ seconds: 500 })).data.snapshot.seconds).toBe(120);
+  });
+
   it("requires HOST_PIN when one is set", async () => {
     const env = setup();
     process.env.HOST_PIN = "4821";
@@ -252,9 +258,9 @@ describe("a full game", () => {
     expect((await env.answer(players[1]!.playerToken, 0, text)).data).toEqual({ status: "too_late", message: LIVE_MESSAGES.over });
   });
 
-  it("closes the prompt as soon as everyone has locked in", async () => {
-    const env = setup();
-    const { players, promptIds } = await startedRoom(env);
+  it("reveals as soon as every real player has locked in (bots don't count)", async () => {
+    const env = setup({ bots: 2 });
+    const { room, players, promptIds } = await startedRoom(env);
     const text = answerFor(promptIds[0]!).text;
     const before = env.sent.length;
     await env.answer(players[0]!.playerToken, 0, text);
@@ -263,7 +269,50 @@ describe("a full game", () => {
     env.clock.t += 4000;
     await env.answer(players[2]!.playerToken, 0, text);
     expect(env.sent.length).toBe(before + 1);
-    expect(env.sent.at(-1)!.snapshot.question!.deadline).toBe(env.clock.t);
+    const revealed = env.sent.at(-1)!.snapshot;
+    expect(revealed.phase).toBe("reveal");
+    expect(revealed.view).toBe("climb");
+    expect(revealed.question!.deadline).toBe(env.clock.t);
+    expect(revealed.reveal!.answered).toBe(5); // three players and the two bots
+    // The host's reveal button is now a no-op, and doesn't broadcast again.
+    const { data } = await env.hostOp(room.hostToken, "reveal");
+    expect(data.snapshot.phase).toBe("reveal");
+    expect(env.sent.length).toBe(before + 1);
+  });
+
+  it("reveals by itself once time is up, on whichever request comes next, exactly once", async () => {
+    const env = setup();
+    const { room, players } = await startedRoom(env);
+    const before = env.sent.length;
+    // Still within the grace window: nothing happens yet.
+    env.clock.t += 25_000 + SUBMIT_GRACE_MS - 1;
+    expect((await env.stateOf(players[0]!.playerToken)).data.snapshot.phase).toBe("question");
+    expect(env.sent.length).toBe(before);
+
+    env.clock.t += 1;
+    const results = await Promise.all([
+      env.stateOf(players[0]!.playerToken),
+      env.stateOf(players[1]!.playerToken),
+      env.call<LiveStateResponse>({ action: "state", code: room.snapshot.code }),
+      env.hostOp(room.hostToken, "state"),
+    ]);
+    for (const r of results) expect(r.data.snapshot.phase).toBe("reveal");
+    expect(env.sent.length).toBe(before + 1);
+    expect(env.sent.at(-1)!.snapshot.phase).toBe("reveal");
+
+    // A late answer gets "too late", not a second reveal.
+    expect((await env.answer(players[2]!.playerToken, 0, "Anything")).data.status).toBe("too_late");
+    expect(env.sent.length).toBe(before + 1);
+  });
+
+  it("a late answer is what triggers the reveal when nobody else asked", async () => {
+    const env = setup();
+    const { players } = await startedRoom(env);
+    const before = env.sent.length;
+    env.clock.t += 60_000;
+    expect((await env.answer(players[0]!.playerToken, 0, "Anything")).data.status).toBe("too_late");
+    expect(env.sent.length).toBe(before + 1);
+    expect(env.sent.at(-1)!.snapshot.phase).toBe("reveal");
   });
 
   it("revealing early closes the prompt and waits out the grace period first", async () => {

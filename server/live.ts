@@ -57,7 +57,7 @@ export interface LiveDeps {
 
 export const MAX_PLAYERS = 150;
 export const ROUND_LIMITS = { min: 3, max: 12 } as const;
-export const SECOND_LIMITS = { min: 10, max: 60 } as const;
+export const SECOND_LIMITS = { min: 10, max: 120 } as const;
 /** A new room plays the whole event set (server/event-set.ts). */
 export const DEFAULT_ROUNDS = Math.min(ROUND_LIMITS.max, Math.max(ROUND_LIMITS.min, EVENT_PROMPT_IDS.length));
 
@@ -432,10 +432,10 @@ export async function create(body: Record<string, unknown>, deps: LiveDeps): Pro
 export async function host(body: Record<string, unknown>, deps: LiveDeps): Promise<LiveHostResponse> {
   const token = readHostToken(body.hostToken);
   const store = storeFor(deps);
-  let room = await loadRoom(store, token.rid);
+  let room = await revealIfTimeUp(store, await loadRoom(store, token.rid), deps);
   let now = deps.now();
   const op = body.op as LiveHostOp;
-  const readOnly = op === "state" || op === "answers";
+  let readOnly = op === "state" || op === "answers";
   if (!readOnly && !isOpen(room, now)) throw new HttpError(410, "This room has ended. Create a new one.", "ended");
 
   let answersIndex: number | null = null;
@@ -513,11 +513,19 @@ export async function host(body: Record<string, unknown>, deps: LiveDeps): Promi
     }
 
     case "close":
+      if (room.phase === "reveal") {
+        readOnly = true; // time ran out and it revealed itself (already broadcast)
+        break;
+      }
       requirePhase("question");
       if ((room.deadline ?? 0) > now) await change({ deadline: now });
       break;
 
     case "reveal": {
+      if (room.phase === "reveal") {
+        readOnly = true; // already revealed (everyone answered, or time ran out) and broadcast
+        break;
+      }
       requirePhase("question");
       if ((room.deadline ?? 0) > now) await change({ deadline: now });
       // Let answers already on their way (sent before the buzzer) land first.
@@ -618,7 +626,7 @@ export async function join(body: Record<string, unknown>, deps: LiveDeps): Promi
   const code = normalizeRoomCode(body.code);
   if (!code) throw new HttpError(400, "Room codes are 4 letters.", "code");
   const nickname = cleanNickname(body.nickname);
-  if (!nickname) throw new HttpError(400, "Pick a nickname first.", "nickname");
+  if (!nickname) throw new HttpError(400, "Pick a name first.", "nickname");
 
   const store = storeFor(deps);
   const now = deps.now();
@@ -648,15 +656,17 @@ export async function state(body: Record<string, unknown>, deps: LiveDeps): Prom
   const now = deps.now();
   if (body.playerToken !== undefined) {
     const token = readPlayerToken(body.playerToken);
-    const [room, player] = await Promise.all([loadRoom(store, token.rid), store.getPlayer(token.pid)]);
-    if (!player || player.roomId !== room.id) throw new HttpError(401, "Your seat in this room expired. Join again.", "bad_token");
+    const [loaded, player] = await Promise.all([loadRoom(store, token.rid), store.getPlayer(token.pid)]);
+    if (!player || player.roomId !== loaded.id) throw new HttpError(401, "Your seat in this room expired. Join again.", "bad_token");
+    const room = await revealIfTimeUp(store, loaded, deps);
     const { players, subs } = await roomData(store, room.id);
     return { snapshot: buildSnapshot(room, players, subs, now), me: meFor(player, room, subs), realtime: deps.broadcaster().realtimeFor(room.id) };
   }
   const code = normalizeRoomCode(body.code);
   if (!code) throw new HttpError(400, "Room codes are 4 letters.", "code");
-  const room = await store.findOpenRoom(code, now);
-  if (!room) throw new HttpError(404, `No open room with code ${code}.`, "no_room");
+  const found = await store.findOpenRoom(code, now);
+  if (!found) throw new HttpError(404, `No open room with code ${code}.`, "no_room");
+  const room = await revealIfTimeUp(store, found, deps);
   const { players, subs } = await roomData(store, room.id);
   return { snapshot: buildSnapshot(room, players, subs, now), realtime: deps.broadcaster().realtimeFor(room.id) };
 }
@@ -672,6 +682,7 @@ export async function answer(body: Record<string, unknown>, deps: LiveDeps): Pro
   if (!isOpen(room, now)) return { status: "too_late", message: LIVE_MESSAGES.ended };
   const index = body.index;
   if (room.phase !== "question" || index !== room.roundIndex || now > (room.deadline ?? 0) + SUBMIT_GRACE_MS) {
+    await revealIfTimeUp(store, room, deps);
     return { status: "too_late", message: LIVE_MESSAGES.over };
   }
 
@@ -696,7 +707,7 @@ export async function answer(body: Record<string, unknown>, deps: LiveDeps): Pro
         ai: false,
         reference: null,
       });
-      await closeIfEveryoneAnswered(room, deps);
+      await revealIfEveryoneAnswered(room, deps);
       return { status: "locked", index: room.roundIndex, canonical: stored.canonical };
     }
     case "ambiguous":
@@ -731,7 +742,7 @@ export async function answer(body: Record<string, unknown>, deps: LiveDeps): Pro
         ai: verdict.kind === "accepted",
         reference: verdict.kind === "accepted" ? verdict.reference : null,
       });
-      await closeIfEveryoneAnswered(fresh, deps);
+      await revealIfEveryoneAnswered(fresh, deps);
       return { status: "locked", index: room.roundIndex, canonical: stored.canonical };
     }
   }
@@ -749,20 +760,47 @@ async function aiStatuses(room: LiveRoom, subs: readonly LiveSubmission[], deps:
   return statuses;
 }
 
-/** When the last player locks in, end the timer early so nobody waits. */
-async function closeIfEveryoneAnswered(room: LiveRoom, deps: LiveDeps): Promise<void> {
+// ───────────────────────── automatic reveals ─────────────────────────
+
+/**
+ * Moves the current prompt to its reveal: the same as the host's "reveal" button.
+ * Version-checked, so when several requests race only one of them reveals; the
+ * others get the revealed room back.
+ */
+async function revealRoom(store: LiveStore, room: LiveRoom, deps: LiveDeps, patch: RoomPatch = {}): Promise<LiveRoom> {
+  const now = deps.now();
+  // Each reveal starts on the climb. Only written when it changes, so rooms work before migration 0006.
+  const updated = await store.updateRoom(room.id, room.version, { ...patch, phase: "reveal", ...(room.revealView === "climb" ? {} : { revealView: "climb" as const }) });
+  if (!updated) return (await store.getRoom(room.id)) ?? room; // someone else moved it on first
+  await store.markRevealed(room.id, room.roundIndex, now);
+  const { players, subs } = await roomData(store, room.id);
+  await deps.broadcaster().send(room.id, buildSnapshot(updated, players, subs, now));
+  return updated;
+}
+
+/**
+ * Time's up (deadline + the grace for answers already on their way): reveal.
+ * There are no server timers, so every request that looks at the room calls this
+ * (host console, projector and phones polling, late answers).
+ */
+async function revealIfTimeUp(store: LiveStore, room: LiveRoom, deps: LiveDeps): Promise<LiveRoom> {
+  const now = deps.now();
+  if (room.phase !== "question" || room.deadline === null || now < room.deadline + SUBMIT_GRACE_MS || !isOpen(room, now)) return room;
+  return revealRoom(store, room, deps);
+}
+
+/** When the last real player locks in, reveal straight away so nobody waits. */
+async function revealIfEveryoneAnswered(room: LiveRoom, deps: LiveDeps): Promise<void> {
   const store = storeFor(deps);
   const [players, answered] = await Promise.all([store.listPlayers(room.id), store.answeredPlayerIds(room.id, room.roundIndex)]);
   const done = new Set(answered);
-  // Bots answer on their own schedule; only real players are waited on.
+  // Bots lock in the moment a prompt opens; only real players are waited on.
   const active = players.filter((p) => !p.kicked && !p.bot);
   if (active.length === 0 || !active.every((p) => done.has(p.id))) return;
+  const fresh = await store.getRoom(room.id);
+  if (!fresh || fresh.phase !== "question" || fresh.roundIndex !== room.roundIndex) return; // already revealed
   const now = deps.now();
-  if ((room.deadline ?? 0) <= now) return;
-  const closed = await store.updateRoom(room.id, room.version, { deadline: now });
-  if (!closed) return; // the host acted meanwhile; their snapshot wins
-  const subs = await store.listSubmissions(room.id);
-  await deps.broadcaster().send(room.id, buildSnapshot(closed, players, subs, now));
+  await revealRoom(store, fresh, deps, (fresh.deadline ?? 0) > now ? { deadline: now } : {});
 }
 
 // ───────────────────────── handler ─────────────────────────
