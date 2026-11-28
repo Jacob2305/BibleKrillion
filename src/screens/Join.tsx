@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { normalizeRoomCode } from "../../lib/game/live";
 import type { RevealAnswer } from "../../lib/game/api-types";
 import type { LiveMe, LiveSnapshot } from "../../lib/game/live-types";
 import { APP_NAME } from "../../lib/game/brand";
 import { TIER_INFO } from "../../lib/game/scoring";
-import { RevealHud, World } from "../game/climb/Climb";
+import { AnswersSheet, RevealHud, World } from "../game/climb/Climb";
+import { RevealList } from "../game/RevealList";
 import { roomStops, useFollowClimb, type FollowClimb } from "../game/climb/staged";
 import { SkyPage } from "../game/Sky";
 import { BigButton } from "../game/DivePlayer";
@@ -386,7 +388,7 @@ function PlayerRoom({ seat, onLeave }: { seat: Seat; onLeave: (message: string) 
       <World
         {...climb.world}
         explore={!kicked && (snap.phase === "lobby" || (revealing && climb.phase === "landed"))}
-        backClass="bottom-10"
+        backClass={revealing ? "bottom-20" : "bottom-10"}
       />
       <main className="relative z-10 mx-auto max-w-xl px-4 pt-4 pb-16">
         <header className="pixel-panel mb-5 px-3 py-2 text-sm">
@@ -604,21 +606,56 @@ function MyReveal({ snap, answer, climb }: { snap: LiveSnapshot; answer: RevealA
     );
   }
   return (
-    <RevealHud
-      climb={climb}
-      hideClimber
-      topClass="pt-24"
-      kicker={answer ? "Your answer" : snap.question?.prompt.prompt}
-      headline={answer ? answer.canonical : "No answer this time"}
-      details={
-        (answer?.gemNote || answer?.aiJudged) && (
-          <>
-            {answer?.gemNote && <p className="text-amber-100">💎 {answer.gemNote}</p>}
-            {answer?.aiJudged && <p className="text-sky-200">✨ Accepted by the AI judge: {answer.reference}</p>}
-          </>
-        )
-      }
-    />
+    <>
+      <RevealHud
+        climb={climb}
+        hideClimber
+        topClass="pt-24"
+        kicker={answer ? "Your answer" : snap.question?.prompt.prompt}
+        headline={answer ? answer.canonical : "No answer this time"}
+        details={
+          (answer?.gemNote || answer?.aiJudged) && (
+            <>
+              {answer?.gemNote && <p className="text-amber-100">💎 {answer.gemNote}</p>}
+              {answer?.aiJudged && <p className="text-sky-200">✨ Accepted by the AI judge: {answer.reference}</p>}
+            </>
+          )
+        }
+      />
+      {snap.reveal && <AllAnswers snap={snap} reveal={snap.reveal} mine={answer?.canonical ?? null} />}
+    </>
+  );
+}
+
+/**
+ * A small button at the bottom that opens every answer in the bank. It lives
+ * inside the reveal, so it closes by itself when the next prompt starts.
+ */
+function AllAnswers({ snap, reveal, mine }: { snap: LiveSnapshot; reveal: NonNullable<LiveSnapshot["reveal"]>; mine: string | null }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <div className="fixed inset-x-0 bottom-8 z-30 flex justify-center pb-[env(safe-area-inset-bottom)]">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="rounded-xl bg-night-950/85 px-4 py-2 text-sm font-semibold ring-2 ring-white/25 hover:bg-night-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sun-300"
+        >
+          All answers
+        </button>
+      </div>
+      {open &&
+        createPortal(
+          // Over everything on the page, including the place line at the bottom.
+          <div className="relative z-50">
+            <AnswersSheet open title="All answers" onClose={() => setOpen(false)}>
+              <p className="mb-4 text-cloud-50/70">{snap.question?.prompt.prompt}</p>
+              <RevealList reveal={reveal.reveal} mine={mine} counts={reveal.counts} />
+            </AnswersSheet>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 
