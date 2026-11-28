@@ -18,6 +18,7 @@ import type { RevealAnswer } from "../lib/game/api-types.js";
 import type {
   LiveAiAnswer,
   LiveAnswerResponse,
+  LiveHostAnswers,
   LiveHostInfo,
   LiveHostOp,
   LiveHostResponse,
@@ -26,16 +27,19 @@ import type {
   LiveSnapshot,
   LiveStateResponse,
 } from "../lib/game/live-types.js";
-import { PROMPTS_PER_DIVE, pointsForTier } from "../lib/game/scoring.js";
+import { isAnswerTier, pointsForTier, type AnswerTier } from "../lib/game/scoring.js";
 import { allPrompts, getPrompt, matchPrompt, publicPrompt, revealFor } from "./bank.js";
 import { MAX_ANSWER_LENGTH, SUBMIT_GRACE_MS, promptSeconds } from "./config.js";
 import { HttpError, json, readJsonBody, withErrors } from "./http.js";
+import { EVENT_PROMPT_IDS } from "./event-set.js";
+import { addBots, botsAnswer, visibleSubs } from "./live-bots.js";
 import { getBroadcaster, type Broadcaster } from "./live-broadcast.js";
 import { ROOM_TTL_MS, getLiveStore, type LivePlayer, type LiveRoom, type LiveStore, type LiveSubmission, type RoomPatch } from "./live-store.js";
 import { cleanNickname, cleanTeamName } from "./names.js";
 import { aiRevealAnswer, defaultJudgeDeps, judgeRejectionMessage, judgeUnlisted, type JudgeDeps } from "./judge.js";
 import type { VerdictStatus } from "./judge-store.js";
 import { logRejectedAnswer } from "./rejections.js";
+import { MemoryTierStore, getTierStore, type TierOverrides, type TierStore } from "./tier-store.js";
 import { signToken, verifyToken } from "./tokens.js";
 
 export interface LiveDeps {
@@ -45,11 +49,17 @@ export interface LiveDeps {
   broadcaster: () => Broadcaster;
   sleep: (ms: number) => Promise<void>;
   judge?: JudgeDeps;
+  /** The host's permanent tier changes (defaults to the shared store; tests get their own). */
+  tiers?: () => TierStore;
+  /** Test bots added to every new room (0 when omitted; the real handler uses 2). `create { bots: false }` turns them off. */
+  bots?: number;
 }
 
 export const MAX_PLAYERS = 150;
 export const ROUND_LIMITS = { min: 3, max: 12 } as const;
 export const SECOND_LIMITS = { min: 10, max: 60 } as const;
+/** A new room plays the whole event set (server/event-set.ts). */
+export const DEFAULT_ROUNDS = Math.min(ROUND_LIMITS.max, Math.max(ROUND_LIMITS.min, EVENT_PROMPT_IDS.length));
 
 export const LIVE_MESSAGES = {
   rejected: "Not in the bank — try again.",
@@ -94,8 +104,18 @@ function promptAt(room: LiveRoom, index: number): BankPrompt {
 const isOpen = (room: LiveRoom, now: number) => room.endedAt === null && now - room.createdAt < ROOM_TTL_MS;
 
 /**
- * Prompts for a room: random, distinct categories where possible, never one
- * already in `keep`.
+ * Prompts for a room: the event set (server/event-set.ts) in order, skipping any
+ * in `keep`; then random ones if more are needed.
+ */
+function roomPrompts(count: number, random: () => number, keep: readonly string[] = []): string[] {
+  const used = new Set(keep);
+  const picked = EVENT_PROMPT_IDS.filter((id) => !used.has(id) && getPrompt(id)).slice(0, count);
+  if (picked.length < count) picked.push(...pickPrompts(count - picked.length, random, [...keep, ...picked]));
+  return picked;
+}
+
+/**
+ * Random prompts, distinct categories where possible, never one already in `keep`.
  */
 function pickPrompts(count: number, random: () => number, keep: readonly string[] = []): string[] {
   const used = new Set(keep);
@@ -120,9 +140,73 @@ function pickPrompts(count: number, random: () => number, keep: readonly string[
   return picked;
 }
 
+// ───────────────────────── tier overrides ─────────────────────────
+
+const TEST_TIERS = new WeakMap<LiveDeps, TierStore>();
+
+function tiersFor(deps: LiveDeps): TierStore {
+  if (deps.tiers) return deps.tiers();
+  let store = TEST_TIERS.get(deps);
+  if (!store) TEST_TIERS.set(deps, (store = new MemoryTierStore()));
+  return store;
+}
+
+/**
+ * The live store, with every room it hands back carrying the PERMANENT tier
+ * changes (server/tier-store.ts) as its overrides. Rooms made before those
+ * changes pick them up too.
+ */
+function storeFor(deps: LiveDeps): LiveStore {
+  const store = deps.store();
+  const tiers = tiersFor(deps);
+  const fill = async (room: LiveRoom | null): Promise<LiveRoom | null> => {
+    if (!room) return room;
+    const global = await tiers.all();
+    const merged: TierOverrides = { ...room.tierOverrides };
+    for (const [promptId, changes] of Object.entries(global)) merged[promptId] = { ...(merged[promptId] ?? {}), ...changes };
+    return { ...room, tierOverrides: merged };
+  };
+  const filled = new Set<PropertyKey>(["createRoom", "getRoom", "findOpenRoom", "updateRoom"]);
+  return new Proxy(store, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== "function") return value;
+      if (filled.has(prop)) return async (...args: unknown[]) => fill(await (value as (...a: unknown[]) => Promise<LiveRoom | null>).apply(target, args));
+      return value.bind(target);
+    },
+  });
+}
+
+/** The tier the host set for this answer in this room, if any. */
+function overrideFor(room: LiveRoom, roundIndex: number, canonical: string): AnswerTier | undefined {
+  const tier = room.tierOverrides[room.promptIds[roundIndex] ?? ""]?.[canonical];
+  return isAnswerTier(tier) ? tier : undefined;
+}
+
+/** Submissions with the host's re-tiering applied (points recomputed from the tier). */
+function withOverrides(room: LiveRoom, subs: readonly LiveSubmission[]): LiveSubmission[] {
+  return subs.map((s) => {
+    const tier = overrideFor(room, s.roundIndex, s.canonical);
+    return tier && tier !== s.tier ? { ...s, tier, points: pointsForTier(tier) } : s;
+  });
+}
+
+function retierReveal(room: LiveRoom, roundIndex: number, answers: RevealAnswer[]): RevealAnswer[] {
+  return answers
+    .map((a) => {
+      const tier = overrideFor(room, roundIndex, a.canonical);
+      if (!tier || tier === a.tier) return a;
+      const moved: RevealAnswer = { ...a, tier, points: pointsForTier(tier) };
+      if (tier !== "one_in_a_million") delete moved.gemNote;
+      return moved;
+    })
+    .sort((a, b) => b.points - a.points || a.canonical.localeCompare(b.canonical));
+}
+
 // ───────────────────────── views ─────────────────────────
 
-export function buildSnapshot(room: LiveRoom, players: readonly LivePlayer[], subs: readonly LiveSubmission[], now: number): LiveSnapshot {
+export function buildSnapshot(room: LiveRoom, players: readonly LivePlayer[], allSubs: readonly LiveSubmission[], now: number): LiveSnapshot {
+  const subs = withOverrides(room, visibleSubs(allSubs, players, room, now));
   const active = players.filter((p) => !p.kicked);
   const nicknames = new Map(active.map((p) => [p.id, p.nickname]));
   const snapshot: LiveSnapshot = {
@@ -166,9 +250,7 @@ export function buildSnapshot(room: LiveRoom, players: readonly LivePlayer[], su
     for (const s of roundSubs) {
       if (s.ai && nicknames.has(s.playerId) && !aiAnswers.has(s.canonical)) aiAnswers.set(s.canonical, aiRevealAnswer(s.canonical, s.reference ?? ""));
     }
-    if (aiAnswers.size > 0) {
-      reveal.answers = [...reveal.answers, ...aiAnswers.values()].sort((a, b) => b.points - a.points || a.canonical.localeCompare(b.canonical));
-    }
+    reveal.answers = retierReveal(room, index, [...reveal.answers, ...aiAnswers.values()]);
     snapshot.reveal = { reveal, counts, finders, answered, players: active.length };
   }
   return snapshot;
@@ -214,16 +296,54 @@ function aiAnswersFor(room: LiveRoom, subs: readonly LiveSubmission[], statuses:
   return [...out.values()].sort((a, b) => b.roundIndex - a.roundIndex || a.canonical.localeCompare(b.canonical));
 }
 
-function hostInfo(room: LiveRoom, players: readonly LivePlayer[], subs: readonly LiveSubmission[], statuses: AiStatuses = new Map()): LiveHostInfo {
+function hostInfo(
+  room: LiveRoom,
+  players: readonly LivePlayer[],
+  allSubs: readonly LiveSubmission[],
+  now: number,
+  statuses: AiStatuses = new Map(),
+): LiveHostInfo {
+  const subs = visibleSubs(allSubs, players, room, now);
   const answered = new Set(room.phase === "question" ? subs.filter((s) => s.roundIndex === room.roundIndex).map((s) => s.playerId) : []);
   return {
     prompts: room.promptIds.map((id, index) => {
       const p = getPrompt(id);
       return { index, id, prompt: p?.prompt ?? "(removed prompt)", category: p?.category ?? "" };
     }),
-    players: players.map((p) => ({ id: p.id, nickname: p.nickname, team: p.team, kicked: p.kicked, answered: answered.has(p.id) })),
+    players: players.map((p) => ({
+      id: p.id,
+      nickname: p.nickname,
+      team: p.team,
+      kicked: p.kicked,
+      answered: answered.has(p.id),
+      ...(p.bot ? { bot: true as const } : {}),
+    })),
     aiAnswers: aiAnswersFor(room, subs, statuses),
   };
+}
+
+/**
+ * Host only: every answer for one of the room's prompts, with this room's tiers
+ * and how many players gave each. Never part of a snapshot.
+ */
+function hostAnswers(room: LiveRoom, index: number, subs: readonly LiveSubmission[]): LiveHostAnswers {
+  const prompt = promptAt(room, index);
+  const roundSubs = subs.filter((s) => s.roundIndex === index);
+  const counts = new Map<string, number>();
+  for (const s of roundSubs) counts.set(s.canonical, (counts.get(s.canonical) ?? 0) + 1);
+  const list: LiveHostAnswers["answers"] = prompt.answers.map((a) => {
+    const tier = overrideFor(room, index, a.canonical) ?? a.tier;
+    return { canonical: a.canonical, tier, baseTier: a.tier, points: pointsForTier(tier), reference: a.reference, count: counts.get(a.canonical) ?? 0 };
+  });
+  const listed = new Set(list.map((a) => a.canonical));
+  for (const s of roundSubs) {
+    if (!s.ai || listed.has(s.canonical)) continue;
+    listed.add(s.canonical);
+    const tier = overrideFor(room, index, s.canonical) ?? s.tier;
+    list.push({ canonical: s.canonical, tier, baseTier: s.tier, points: pointsForTier(tier), reference: s.reference ?? "", count: counts.get(s.canonical) ?? 0, ai: true });
+  }
+  list.sort((a, b) => b.points - a.points || a.canonical.localeCompare(b.canonical));
+  return { index, promptId: prompt.id, prompt: prompt.prompt, answers: list };
 }
 
 // ───────────────────────── tokens ─────────────────────────
@@ -261,10 +381,10 @@ export async function create(body: Record<string, unknown>, deps: LiveDeps): Pro
     throw new HttpError(401, body.pin ? "That PIN isn't right." : "Enter the host PIN.", "pin");
   }
   const now = deps.now();
-  const rounds = clampInt(body.rounds, ROUND_LIMITS.min, ROUND_LIMITS.max, PROMPTS_PER_DIVE);
+  const rounds = clampInt(body.rounds, ROUND_LIMITS.min, ROUND_LIMITS.max, DEFAULT_ROUNDS);
   const seconds = clampInt(body.seconds, SECOND_LIMITS.min, SECOND_LIMITS.max, promptSeconds());
-  const promptIds = pickPrompts(rounds, deps.random);
-  const store = deps.store();
+  const promptIds = roomPrompts(rounds, deps.random);
+  const store = storeFor(deps);
 
   let room: LiveRoom | null = null;
   for (let attempt = 0; attempt < 12 && !room; attempt++) {
@@ -272,23 +392,41 @@ export async function create(body: Record<string, unknown>, deps: LiveDeps): Pro
   }
   if (!room) throw new HttpError(503, "Couldn't find a free room code. Try again.");
 
+  const bots = body.bots === false ? 0 : (deps.bots ?? 0);
+  if (bots > 0) {
+    try {
+      await addBots(store, room.id, now, bots);
+    } catch (err) {
+      // Before migration 0004 the database has no bot column: host without bots rather than fail.
+      if (!(err instanceof HttpError && err.code === "migration")) throw err;
+      console.warn(`[live] ${err.message} (room ${room.code} has no test bots)`);
+    }
+  }
+  const players = bots > 0 ? await store.listPlayers(room.id) : [];
+
   const token: HostToken = { k: "live-host", rid: room.id };
   return {
     hostToken: signToken(token),
-    snapshot: buildSnapshot(room, [], [], now),
-    host: hostInfo(room, [], []),
+    snapshot: buildSnapshot(room, players, [], now),
+    host: hostInfo(room, players, [], now),
     realtime: deps.broadcaster().realtimeFor(room.id),
   };
 }
 
 export async function host(body: Record<string, unknown>, deps: LiveDeps): Promise<LiveHostResponse> {
   const token = readHostToken(body.hostToken);
-  const store = deps.store();
+  const store = storeFor(deps);
   let room = await loadRoom(store, token.rid);
   let now = deps.now();
   const op = body.op as LiveHostOp;
-  if (op !== "state" && !isOpen(room, now)) throw new HttpError(410, "This room has ended. Create a new one.", "ended");
+  const readOnly = op === "state" || op === "answers";
+  if (!readOnly && !isOpen(room, now)) throw new HttpError(410, "This room has ended. Create a new one.", "ended");
 
+  let answersIndex: number | null = null;
+  const promptIndex = (value: unknown): number => {
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value >= room.promptIds.length) throw new HttpError(400, "Which prompt?");
+    return value;
+  };
   const change = async (patch: RoomPatch) => {
     const updated = await store.updateRoom(room.id, room.version, patch);
     if (!updated) throw new HttpError(409, "The room changed in another tab. Refreshed — try again.", "conflict");
@@ -308,7 +446,7 @@ export async function host(body: Record<string, unknown>, deps: LiveDeps): Promi
       const promptIds =
         rounds <= room.promptIds.length
           ? room.promptIds.slice(0, rounds)
-          : [...room.promptIds, ...pickPrompts(rounds - room.promptIds.length, deps.random, room.promptIds)];
+          : [...room.promptIds, ...roomPrompts(rounds - room.promptIds.length, deps.random, room.promptIds)];
       await change({
         promptIds,
         seconds: clampInt(body.seconds, SECOND_LIMITS.min, SECOND_LIMITS.max, room.seconds),
@@ -338,6 +476,7 @@ export async function host(body: Record<string, unknown>, deps: LiveDeps): Promi
       const deadline = now + room.seconds * 1000;
       await store.saveRound({ roomId: room.id, index: next, promptId: room.promptIds[next]!, openedAt: now, deadline });
       await change({ phase: "question", roundIndex: next, openedAt: now, deadline });
+      await botsAnswer(store, room, await store.listPlayers(room.id), promptAt(room, next), deps.random);
       break;
     }
 
@@ -394,17 +533,40 @@ export async function host(body: Record<string, unknown>, deps: LiveDeps): Promi
       await change({ endedAt: now });
       break;
 
+    case "answers":
+      answersIndex = promptIndex(body.index);
+      break;
+
+    case "retier": {
+      const index = promptIndex(body.index);
+      const canonical = body.canonical;
+      const tier = body.tier;
+      if (typeof canonical !== "string" || !isAnswerTier(tier)) throw new HttpError(400, "Which answer, and which tier?");
+      const prompt = promptAt(room, index);
+      const base =
+        prompt.answers.find((a) => a.canonical === canonical)?.tier ??
+        (await store.listSubmissions(room.id)).find((s) => s.roundIndex === index && s.ai && s.canonical === canonical)?.tier;
+      if (!base) throw new HttpError(404, "That answer isn't in this prompt.");
+      // Saved for good (every room, Practice and the Daily), not just this room.
+      await tiersFor(deps).set(prompt.id, canonical, tier === base ? null : tier, now);
+      await change({});
+      answersIndex = index;
+      break;
+    }
+
     default:
       throw new HttpError(400, "Unknown host action.");
   }
 
   const { players, subs } = await roomData(store, room.id);
   const snapshot = buildSnapshot(room, players, subs, now);
-  if (op !== "state") await deps.broadcaster().send(room.id, snapshot);
+  if (!readOnly) await deps.broadcaster().send(room.id, snapshot);
+  const info = hostInfo(room, players, subs, now, await aiStatuses(room, subs, deps));
+  if (answersIndex !== null) info.answers = hostAnswers(room, answersIndex, subs);
   return {
     hostToken: body.hostToken as string,
     snapshot,
-    host: hostInfo(room, players, subs, await aiStatuses(room, subs, deps)),
+    host: info,
     realtime: deps.broadcaster().realtimeFor(room.id),
   };
 }
@@ -415,7 +577,7 @@ export async function join(body: Record<string, unknown>, deps: LiveDeps): Promi
   const nickname = cleanNickname(body.nickname);
   if (!nickname) throw new HttpError(400, "Pick a nickname first.", "nickname");
 
-  const store = deps.store();
+  const store = storeFor(deps);
   const now = deps.now();
   const room = await store.findOpenRoom(code, now);
   if (!room) throw new HttpError(404, `No open room with code ${code}. Check the screen.`, "no_room");
@@ -438,7 +600,7 @@ export async function join(body: Record<string, unknown>, deps: LiveDeps): Promi
 }
 
 export async function state(body: Record<string, unknown>, deps: LiveDeps): Promise<LiveStateResponse> {
-  const store = deps.store();
+  const store = storeFor(deps);
   const now = deps.now();
   if (body.playerToken !== undefined) {
     const token = readPlayerToken(body.playerToken);
@@ -457,7 +619,7 @@ export async function state(body: Record<string, unknown>, deps: LiveDeps): Prom
 
 export async function answer(body: Record<string, unknown>, deps: LiveDeps): Promise<LiveAnswerResponse> {
   const token = readPlayerToken(body.playerToken);
-  const store = deps.store();
+  const store = storeFor(deps);
   const [room, player] = await Promise.all([loadRoom(store, token.rid), store.getPlayer(token.pid)]);
   if (!player || player.roomId !== room.id) throw new HttpError(401, "Your seat in this room expired. Join again.", "bad_token");
   if (player.kicked) throw new HttpError(403, "The host removed you from this room.", "kicked");
@@ -477,14 +639,15 @@ export async function answer(body: Record<string, unknown>, deps: LiveDeps): Pro
     case "fuzzy": {
       // A corrected spelling: ask "Did you mean …?" first; the player confirms (or edits).
       if (result.kind === "fuzzy" && body.confirm !== true) return { status: "confirm", suggestion: result.answer.canonical };
+      const tier = overrideFor(room, room.roundIndex, result.answer.canonical) ?? result.answer.tier;
       const stored = await store.addSubmission({
         roomId: room.id,
         roundIndex: room.roundIndex,
         playerId: player.id,
         raw,
         canonical: result.answer.canonical,
-        tier: result.answer.tier,
-        points: pointsForTier(result.answer.tier),
+        tier,
+        points: pointsForTier(tier),
         ms: Math.max(0, now - (room.openedAt ?? now)),
         ai: false,
         reference: null,
@@ -542,10 +705,11 @@ async function aiStatuses(room: LiveRoom, subs: readonly LiveSubmission[], deps:
 
 /** When the last player locks in, end the timer early so nobody waits. */
 async function closeIfEveryoneAnswered(room: LiveRoom, deps: LiveDeps): Promise<void> {
-  const store = deps.store();
+  const store = storeFor(deps);
   const [players, answered] = await Promise.all([store.listPlayers(room.id), store.answeredPlayerIds(room.id, room.roundIndex)]);
   const done = new Set(answered);
-  const active = players.filter((p) => !p.kicked);
+  // Bots answer on their own schedule; only real players are waited on.
+  const active = players.filter((p) => !p.kicked && !p.bot);
   if (active.length === 0 || !active.every((p) => done.has(p.id))) return;
   const now = deps.now();
   if ((room.deadline ?? 0) <= now) return;
@@ -563,6 +727,8 @@ const defaultDeps: LiveDeps = {
   store: getLiveStore,
   broadcaster: getBroadcaster,
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  tiers: getTierStore,
+  bots: 2,
 };
 
 export function createLiveHandler(deps: LiveDeps = defaultDeps) {

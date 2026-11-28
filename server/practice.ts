@@ -13,17 +13,20 @@
 import type { AnswerResponse, DiveStartResponse, PromptBeginResponse, RevealResponse } from "../lib/game/api-types.js";
 import { PROMPTS_PER_DIVE } from "../lib/game/scoring.js";
 import { createHash } from "node:crypto";
-import { getPrompt, matchPrompt, pickRandomPromptIds, publicPrompt, revealAnswer, revealFor } from "./bank.js";
+import { getPrompt, matchPrompt, pickRandomPromptIds, publicPrompt, revealAnswer, revealFor, withTiers } from "./bank.js";
 import { MAX_ANSWER_LENGTH, SUBMIT_GRACE_MS, promptSeconds } from "./config.js";
 import { HttpError, json, readJsonBody, withErrors } from "./http.js";
 import { aiRevealAnswer, defaultJudgeDeps, judgeRejectionMessage, judgeUnlisted, type JudgeDeps } from "./judge.js";
 import { logRejectedAnswer } from "./rejections.js";
+import { getTierStore, type TierStore } from "./tier-store.js";
 import { signToken, verifyToken } from "./tokens.js";
 
 export interface Deps {
   now: () => number;
   random: () => number;
   judge?: JudgeDeps;
+  /** The host's permanent tier changes (defaults to the shared store). */
+  tiers?: () => TierStore;
 }
 
 const DIVE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -55,11 +58,11 @@ function readDive(token: unknown, now: number): DiveToken {
   return dive;
 }
 
-function readPrompt(token: unknown) {
+async function readPrompt(token: unknown, deps: Deps) {
   const pt = verifyToken<PromptToken>(token);
   const prompt = pt && pt.k === "practice-prompt" ? getPrompt(pt.pid) : undefined;
   if (!pt || !prompt || typeof pt.dl !== "number") throw new HttpError(400, "Invalid prompt.", "bad_token");
-  return { pt, prompt };
+  return { pt, prompt: withTiers(prompt, await (deps.tiers ?? getTierStore)().all()) };
 }
 
 export function start(deps: Deps): DiveStartResponse {
@@ -91,7 +94,7 @@ export function begin(body: Record<string, unknown>, deps: Deps): PromptBeginRes
 }
 
 export async function answer(body: Record<string, unknown>, deps: Deps): Promise<AnswerResponse> {
-  const { pt, prompt } = readPrompt(body.promptToken);
+  const { pt, prompt } = await readPrompt(body.promptToken, deps);
   if (deps.now() > pt.dl + SUBMIT_GRACE_MS) return { status: "too_late", reveal: revealFor(prompt) };
 
   const raw = typeof body.text === "string" ? body.text.slice(0, MAX_ANSWER_LENGTH) : "";
@@ -122,8 +125,8 @@ export async function answer(body: Record<string, unknown>, deps: Deps): Promise
   }
 }
 
-export function reveal(body: Record<string, unknown>, deps: Deps): RevealResponse {
-  const { pt, prompt } = readPrompt(body.promptToken);
+export async function reveal(body: Record<string, unknown>, deps: Deps): Promise<RevealResponse> {
+  const { pt, prompt } = await readPrompt(body.promptToken, deps);
   if (deps.now() < pt.dl) throw new HttpError(403, "This prompt is still running.", "too_early");
   return { reveal: revealFor(prompt) };
 }
@@ -139,7 +142,7 @@ export function createPracticeHandler(deps: Deps = { now: Date.now, random: Math
       case "answer":
         return json(await answer(body, deps));
       case "reveal":
-        return json(reveal(body, deps));
+        return json(await reveal(body, deps));
       default:
         throw new HttpError(400, 'Unknown action. Use "start", "begin", "answer", or "reveal".');
     }

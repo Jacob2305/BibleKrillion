@@ -73,10 +73,12 @@ describe("fuzzy matching", () => {
     ["Pete", "Peter", 1],
     ["Mathew", "Matthew", 1],
     ["Bartholemew", "Bartholomew", 1],
-    ["Bartolemew", "Bartholomew", 2], // long term: 2 edits allowed
+    ["Bartolemew", "Bartholomew", 1], // th ~ t sounds the same, leaving 1 edit
     ["Tomas", "Thomas", 1],
     ["Judas Iscariott", "Judas Iscariot", 1],
-    ["Cefas", "Peter", 2], // fuzzy against an alias (6-letter "cephas": 2 edits allowed)
+    ["Cefas", "Peter", 0], // sounds exactly like the alias "Cephas" (still a fuzzy match, so it is confirmed)
+    ["Ptr", "Peter", 2], // 5-letter term: 2 edits allowed
+    ["Thoams", "Thomas", 1], // swapped letters count as one edit
   ])("%j → %s (distance %i)", (input, expected, distance) => {
     const result = match(input);
     expect(result.kind).toBe("fuzzy");
@@ -84,16 +86,35 @@ describe("fuzzy matching", () => {
     expect(result.kind === "fuzzy" && result.distance).toBe(distance);
   });
 
-  it("allows ≤1 edit for terms of length ≤5 and ≤2 for longer terms", () => {
-    expect(maxEditsFor("peter")).toBe(1);
+  it("allows more edits for longer terms", () => {
+    expect(maxEditsFor("dan")).toBe(1);
     expect(maxEditsFor("levi")).toBe(1);
+    expect(maxEditsFor("peter")).toBe(2);
     expect(maxEditsFor("andrew")).toBe(2);
-    expect(maxEditsFor("simon peter")).toBe(2);
+    expect(maxEditsFor("bartholomew")).toBe(3);
+    expect(maxEditsFor("judas iscariot")).toBe(4);
+  });
+
+  it("bigger corrections must start with the same sound", () => {
+    const m = buildMatcher([{ canonical: "Uriah", aliases: ["Urijah"] }, { canonical: "Isaiah" }]);
+    expect(m("Elijah").kind).toBe("no_match"); // 2 edits from "Urijah", but a different first sound
+    expect(outcome(m("Isaih"))).toBe("Isaiah");
+  });
+
+  it("accepts spellings that sound right", () => {
+    const people: MatchableAnswer[] = [{ canonical: "Zacchaeus" }, { canonical: "Thessalonica" }, { canonical: "Philippi" }, { canonical: "Jonah" }];
+    const m = buildMatcher(people);
+    expect(outcome(m("Zakeus"))).toBe("Zacchaeus");
+    expect(outcome(m("Zakkias"))).toBe("Zacchaeus");
+    expect(outcome(m("Thesalonika"))).toBe("Thessalonica");
+    expect(outcome(m("Filipi"))).toBe("Philippi");
+    expect(outcome(m("Jonha"))).toBe("Jonah");
+    for (const input of ["Zakeus", "Filipi", "Jonha"]) expect(m(input).kind).toBe("fuzzy"); // still confirmed
   });
 
   it("rejects inputs that are too far off", () => {
-    expect(match("Ptr").kind).toBe("no_match"); // 2 edits from a 5-letter term
-    expect(match("Andrewsss").kind).toBe("no_match"); // 3 edits from a 6-letter term
+    expect(match("Pr").kind).toBe("no_match"); // too short to fuzzy-match
+    expect(match("Andrewxyz").kind).toBe("no_match"); // 3 edits from a 6-letter term
     expect(match("Goliath").kind).toBe("no_match");
   });
 
@@ -112,7 +133,8 @@ describe("fuzzy matching", () => {
     const tribes: MatchableAnswer[] = [{ canonical: "Dan" }, { canonical: "Gad" }, { canonical: "Asher" }];
     expect(outcome(matchAnswer("Dann", tribes))).toBe("Dan");
     expect(outcome(matchAnswer("Gadd", tribes))).toBe("Gad");
-    expect(matchAnswer("Dad", tribes).kind).toBe("ambiguous"); // 1 edit from both Dan and Gad
+    // 1 edit from both Dan and Gad: the one starting with the same sound wins
+    expect(outcome(matchAnswer("Dad", tribes))).toBe("Dan");
   });
 
   it("fuzzy closeness to two terms of the SAME answer is not ambiguous", () => {

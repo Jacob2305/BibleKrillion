@@ -3,6 +3,7 @@
  * and /api/live. Types only: importing this never pulls bank data into the browser.
  */
 import type { PromptReveal, PublicPrompt } from "./api-types.js";
+import type { AnswerTier } from "./scoring.js";
 
 /**
  * lobby → question → reveal → (leaderboard) → question … → final.
@@ -106,10 +107,34 @@ export interface LiveRealtime {
 export interface LiveHostInfo {
   /** The room's prompt list (the host may preview and swap them). */
   prompts: { index: number; id: string; prompt: string; category: string }[];
-  /** Everyone who joined, including removed players. */
-  players: (LivePlayerPublic & { kicked: boolean; answered: boolean })[];
+  /** Everyone who joined, including removed players. `bot` = a test bot the server answers for. */
+  players: (LivePlayerPublic & { kicked: boolean; answered: boolean; bot?: true })[];
   /** Answers the AI judge accepted in this room, for the host to approve or overrule. */
   aiAnswers: LiveAiAnswer[];
+  /** Only in replies to the "answers" and "retier" ops: one prompt's full answer list. */
+  answers?: LiveHostAnswers;
+}
+
+/** Host only: every answer for one prompt, with this room's tiers. */
+export interface LiveHostAnswers {
+  index: number;
+  promptId: string;
+  prompt: string;
+  answers: LiveHostAnswer[];
+}
+
+export interface LiveHostAnswer {
+  canonical: string;
+  /** The tier it scores in this room. */
+  tier: AnswerTier;
+  /** The tier in the answer bank (differs when the host moved it). */
+  baseTier: AnswerTier;
+  points: number;
+  reference: string;
+  /** Players in this room who gave it for this prompt. */
+  count: number;
+  /** Accepted by the AI judge (not in the bank). */
+  ai?: true;
 }
 
 export interface LiveAiAnswer {
@@ -165,4 +190,8 @@ export type LiveHostOp =
   | "unkick"
   | "ai_approve"
   | "ai_reject"
-  | "end";
+  | "end"
+  /** Host only: a prompt's full answer list (body: index). */
+  | "answers"
+  /** Move one answer to another tier for this room (body: index, canonical, tier). */
+  | "retier";

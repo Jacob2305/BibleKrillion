@@ -204,7 +204,8 @@ export function validateBank(data: unknown): BankValidation {
     });
 
     stats.gems += gems;
-    if (gems === 0) err("Needs at least one gem (tier one_in_a_million).");
+    if (gems === 0) err("Needs at least one gem (tier one_in_a_million). Exactly one gem per prompt.");
+    else if (gems > 1) err(`Has ${gems} gems: exactly one gem (one_in_a_million) per prompt. Make the others deep_cut.`);
 
     // Duplicate terms: the same name/alias (after normalization) may appear only once per prompt.
     const owners = new Map<string, string[]>();

@@ -7,6 +7,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { LivePhase } from "../lib/game/live-types.js";
 import type { AnswerTier } from "../lib/game/scoring.js";
 import { isDeployed } from "./config.js";
+import { HttpError } from "./http.js";
 import { getServiceClient } from "./supabase.js";
 
 /** Rooms older than this are treated as over (and their code can be reused). */
@@ -26,7 +27,11 @@ export interface LiveRoom {
   deadline: number | null;
   createdAt: number;
   endedAt: number | null;
+  /** Host re-tiering for this room: promptId → canonical → tier. Applied wherever points are computed. */
+  tierOverrides: TierOverrides;
 }
+
+export type TierOverrides = Record<string, Record<string, AnswerTier>>;
 
 export interface LivePlayer {
   id: string;
@@ -36,6 +41,8 @@ export interface LivePlayer {
   team: string | null;
   kicked: boolean;
   joinedAt: number;
+  /** A test bot the server answers for (see server/live-bots.ts). */
+  bot: boolean;
 }
 
 export interface LiveSubmission {
@@ -60,7 +67,18 @@ export interface LiveRoundRecord {
   deadline: number;
 }
 
-export type RoomPatch = Partial<Pick<LiveRoom, "phase" | "roundIndex" | "promptIds" | "seconds" | "teams" | "openedAt" | "deadline" | "endedAt">>;
+export type RoomPatch = Partial<
+  Pick<LiveRoom, "phase" | "roundIndex" | "promptIds" | "seconds" | "teams" | "openedAt" | "deadline" | "endedAt" | "tierOverrides">
+>;
+
+export interface NewPlayer {
+  roomId: string;
+  nickname: string;
+  nameKey: string;
+  team: string | null;
+  now: number;
+  bot?: boolean;
+}
 
 export interface LiveStore {
   /** Creates the room, or returns null if that code is in use by an open room. */
@@ -74,7 +92,7 @@ export interface LiveStore {
   markRevealed(roomId: string, index: number, now: number): Promise<void>;
 
   /** Adds the player, or returns "name_taken". */
-  addPlayer(input: { roomId: string; nickname: string; nameKey: string; team: string | null; now: number }): Promise<LivePlayer | "name_taken">;
+  addPlayer(input: NewPlayer): Promise<LivePlayer | "name_taken">;
   getPlayer(id: string): Promise<LivePlayer | null>;
   listPlayers(roomId: string): Promise<LivePlayer[]>;
   setKicked(roomId: string, playerId: string, kicked: boolean): Promise<void>;
@@ -120,6 +138,7 @@ export class MemoryLiveStore implements LiveStore {
       deadline: null,
       createdAt: input.now,
       endedAt: null,
+      tierOverrides: {},
     };
     this.rooms.set(room.id, room);
     return structuredClone(room);
@@ -151,9 +170,18 @@ export class MemoryLiveStore implements LiveStore {
     if (r && r.revealedAt === null) r.revealedAt = now;
   }
 
-  async addPlayer(input: { roomId: string; nickname: string; nameKey: string; team: string | null; now: number }) {
+  async addPlayer(input: NewPlayer) {
     for (const p of this.players.values()) if (p.roomId === input.roomId && p.nameKey === input.nameKey) return "name_taken" as const;
-    const player: LivePlayer = { id: randomUUID(), roomId: input.roomId, nickname: input.nickname, nameKey: input.nameKey, team: input.team, kicked: false, joinedAt: input.now };
+    const player: LivePlayer = {
+      id: randomUUID(),
+      roomId: input.roomId,
+      nickname: input.nickname,
+      nameKey: input.nameKey,
+      team: input.team,
+      kicked: false,
+      joinedAt: input.now,
+      bot: input.bot === true,
+    };
     this.players.set(player.id, player);
     return { ...player };
   }
@@ -209,6 +237,8 @@ interface RoomRow {
   deadline: string | null;
   created_at: string;
   ended_at: string | null;
+  /** Added by migration 0004 (absent before it runs). */
+  tier_overrides?: TierOverrides | null;
 }
 
 interface PlayerRow {
@@ -219,6 +249,8 @@ interface PlayerRow {
   team: string | null;
   kicked: boolean;
   joined_at: string;
+  /** Added by migration 0004 (absent before it runs). */
+  is_bot?: boolean | null;
 }
 
 interface SubmissionRow {
@@ -250,6 +282,7 @@ const toRoom = (r: RoomRow): LiveRoom => ({
   deadline: ms(r.deadline),
   createdAt: Date.parse(r.created_at),
   endedAt: ms(r.ended_at),
+  tierOverrides: r.tier_overrides ?? {},
 });
 
 const toPlayer = (p: PlayerRow): LivePlayer => ({
@@ -260,6 +293,7 @@ const toPlayer = (p: PlayerRow): LivePlayer => ({
   team: p.team,
   kicked: p.kicked,
   joinedAt: Date.parse(p.joined_at),
+  bot: p.is_bot === true,
 });
 
 const toSubmission = (s: SubmissionRow): LiveSubmission => ({
@@ -278,6 +312,9 @@ const toSubmission = (s: SubmissionRow): LiveSubmission => ({
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function fail(what: string, error: { message: string }): never {
+  if (/tier_overrides|is_bot/.test(error.message)) {
+    throw new HttpError(503, "Host tools need a database update: run supabase/migrations/0004_host_tools.sql in the Supabase SQL Editor.", "migration");
+  }
   throw new Error(`${what} failed: ${error.message}`);
 }
 
@@ -335,6 +372,7 @@ export class SupabaseLiveStore implements LiveStore {
     if (patch.openedAt !== undefined) row.opened_at = iso(patch.openedAt);
     if (patch.deadline !== undefined) row.deadline = iso(patch.deadline);
     if (patch.endedAt !== undefined) row.ended_at = iso(patch.endedAt);
+    if (patch.tierOverrides !== undefined) row.tier_overrides = patch.tierOverrides;
     const { data, error } = await this.db.from("rooms").update(row).eq("id", id).eq("version", expectedVersion).select("*").maybeSingle();
     if (error) fail("rooms update", error);
     return data ? toRoom(data as RoomRow) : null;
@@ -357,10 +395,13 @@ export class SupabaseLiveStore implements LiveStore {
     if (error) fail("rounds reveal", error);
   }
 
-  async addPlayer(input: { roomId: string; nickname: string; nameKey: string; team: string | null; now: number }) {
+  async addPlayer(input: NewPlayer) {
+    const row: Record<string, unknown> = { room_id: input.roomId, nickname: input.nickname, name_key: input.nameKey, team: input.team, joined_at: iso(input.now) };
+    // Only bots send is_bot, so phones can still join before migration 0004 has run.
+    if (input.bot) row.is_bot = true;
     const { data, error } = await this.db
       .from("players")
-      .insert({ room_id: input.roomId, nickname: input.nickname, name_key: input.nameKey, team: input.team, joined_at: iso(input.now) })
+      .insert(row)
       .select("*")
       .single();
     if (error) {

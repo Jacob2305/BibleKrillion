@@ -53,6 +53,12 @@ describe("validateBank", () => {
     expect(text).toMatch(/66-book canon/);
   });
 
+  it("allows exactly one gem per prompt", () => {
+    const bank = sevenPrompts();
+    bank[0]!.answers[0] = answer("Alpha", "one_in_a_million", { gem_note: "Another gem." });
+    expect(messages(validateBank(bank).errors)).toMatch(/Has 2 gems: exactly one gem/);
+  });
+
   it("requires a gem_note on gems", () => {
     const bank = sevenPrompts();
     delete bank[0]!.answers[7]!.gem_note;

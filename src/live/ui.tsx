@@ -45,7 +45,7 @@ export function ConnectionNote({ connection, error }: { connection: Connection; 
   }
   if (connection === "live") return null;
   return (
-    <p role="status" className="text-xs text-cloud-50/40">
+    <p role="status" className="sr-only">
       {connection === "connecting" ? "Connecting…" : "Syncing every few seconds"}
     </p>
   );

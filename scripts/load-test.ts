@@ -166,7 +166,7 @@ async function listen(p: Player, realtime: NonNullable<LiveJoinResponse["realtim
 async function main() {
   console.log(`Load test → ${BASE}: ${PLAYERS} players, ${ROUNDS} rounds × ${SECONDS}s${REALTIME ? ", realtime sockets" : ", polling"}\n`);
 
-  const created = await api<LiveHostResponse>("create", { action: "create", pin: PIN, rounds: ROUNDS, seconds: SECONDS, teams: TEAMS });
+  const created = await api<LiveHostResponse>("create", { action: "create", pin: PIN, rounds: ROUNDS, seconds: SECONDS, teams: TEAMS, bots: false });
   const hostToken = created.hostToken;
   const host = (op: string) => api<LiveHostResponse>(`host:${op}`, { action: "host", hostToken, op });
   console.log(`Room ${created.snapshot.code} created.`);

@@ -4,13 +4,14 @@ import { normalizeAnswer } from "../../lib/game/normalize";
 import { allPrompts, getPrompt, pickRandomPromptIds } from "../bank";
 import { SUBMIT_GRACE_MS } from "../config";
 import { MESSAGES, createPracticeHandler } from "../practice";
+import { MemoryTierStore, type TierStore } from "../tier-store";
 import { signToken, verifyToken } from "../tokens";
 
 const T0 = 1_800_000_000_000;
 
-function setup() {
+function setup(tiers: TierStore = new MemoryTierStore()) {
   const clock = { t: T0 };
-  const handler = createPracticeHandler({ now: () => clock.t, random: Math.random });
+  const handler = createPracticeHandler({ now: () => clock.t, random: Math.random, tiers: () => tiers });
   async function call<T = unknown>(body: unknown): Promise<{ status: number; data: T }> {
     const res = await handler(
       new Request("http://test/api/practice", {
@@ -34,6 +35,21 @@ async function beginPrompt(call: ReturnType<typeof setup>["call"], promptId: str
 }
 
 afterEach(() => vi.restoreAllMocks());
+
+describe("permanent tier changes", () => {
+  it("score answers at the host's tier, in the result and the reveal", async () => {
+    const tiers = new MemoryTierStore();
+    const p = getPrompt("the-twelve")!;
+    const a = p.answers.find((x) => x.tier === "plankton" && !x.generic_for)!;
+    await tiers.set(p.id, a.canonical, "deep_cut", T0);
+    const { call } = setup(tiers);
+    const { promptToken } = await beginPrompt(call, p.id);
+    const { data } = await call<AnswerResponse>({ action: "answer", promptToken, text: a.canonical });
+    expect(data).toMatchObject({ status: "accepted", answer: { canonical: a.canonical, tier: "deep_cut", points: 85 } });
+    if (data.status !== "accepted") throw new Error("not accepted");
+    expect(data.reveal.answers.find((x) => x.canonical === a.canonical)).toMatchObject({ tier: "deep_cut" });
+  });
+});
 
 describe("tokens", () => {
   it("round-trips", () => {

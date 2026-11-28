@@ -25,7 +25,7 @@ import type {
 import type { BankPrompt } from "../lib/game/bank.js";
 import type { RevealAnswer } from "../lib/game/api-types.js";
 import { diveRating, pointsForTier } from "../lib/game/scoring.js";
-import { getPrompt, matchPrompt, publicPrompt, revealAnswer, revealFor } from "./bank.js";
+import { getPrompt, matchPrompt, publicPrompt, revealAnswer, revealFor, withTiers } from "./bank.js";
 import { MAX_ANSWER_LENGTH, SUBMIT_GRACE_MS, promptSeconds } from "./config.js";
 import { dailyPromptIds, dayKey } from "./daily-schedule.js";
 import { getDailyStore, type DailyAttempt, type DailyRound, type DailyStore } from "./daily-store.js";
@@ -33,12 +33,15 @@ import { HttpError, json, readJsonBody, withErrors } from "./http.js";
 import { aiRevealAnswer, defaultJudgeDeps, judgeRejectionMessage, judgeUnlisted, type JudgeDeps } from "./judge.js";
 import { cleanNickname } from "./names.js";
 import { logRejectedAnswer } from "./rejections.js";
+import { getTierStore, type TierStore } from "./tier-store.js";
 import { signToken, verifyToken } from "./tokens.js";
 
 export interface DailyDeps {
   now: () => number;
   store: () => DailyStore;
   judge?: JudgeDeps;
+  /** The host's permanent tier changes (defaults to the shared store). */
+  tiers?: () => TierStore;
 }
 
 interface DiveToken {
@@ -95,10 +98,11 @@ function readDiveToken(token: unknown): DiveToken {
   return dive;
 }
 
-async function readPromptToken(token: unknown, store: DailyStore) {
+async function readPromptToken(token: unknown, store: DailyStore, deps: DailyDeps) {
   const pt = verifyToken<PromptToken>(token);
-  const prompt = pt && pt.k === "daily-prompt" ? getPrompt(pt.pid) : undefined;
-  if (!pt || !prompt) throw new HttpError(400, "Invalid prompt.", "bad_token");
+  const bankPrompt = pt && pt.k === "daily-prompt" ? getPrompt(pt.pid) : undefined;
+  if (!pt || !bankPrompt) throw new HttpError(400, "Invalid prompt.", "bad_token");
+  const prompt = withTiers(bankPrompt, await (deps.tiers ?? getTierStore)().all());
   const attempt = await loadAttempt(store, pt.aid);
   const round = attempt.rounds[pt.i];
   if (!round || round.promptId !== pt.pid) throw new HttpError(409, "Out of sync. Reload the page.", "out_of_sync");
@@ -169,7 +173,7 @@ async function closeRound(store: DailyStore, attempt: DailyAttempt, index: numbe
 
 export async function answer(body: Record<string, unknown>, deps: DailyDeps): Promise<AnswerResponse> {
   const store = deps.store();
-  const { pt, prompt, attempt, round } = await readPromptToken(body.promptToken, store);
+  const { pt, prompt, attempt, round } = await readPromptToken(body.promptToken, store, deps);
 
   // Round already over: repeat its outcome (one accepted answer per prompt, then it locks).
   if (round.tier) return lockedOutcome(prompt, round);
@@ -223,7 +227,7 @@ function lockedOutcome(prompt: BankPrompt, round: DailyRound): AnswerResponse {
 
 export async function reveal(body: Record<string, unknown>, deps: DailyDeps): Promise<RevealResponse> {
   const store = deps.store();
-  const { pt, prompt, attempt, round } = await readPromptToken(body.promptToken, store);
+  const { pt, prompt, attempt, round } = await readPromptToken(body.promptToken, store, deps);
   const now = deps.now();
   if (!round.tier) {
     if (now < round.deadline) throw new HttpError(403, "This prompt is still running.", "too_early");

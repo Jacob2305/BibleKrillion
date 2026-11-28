@@ -45,6 +45,18 @@ for (const table of TABLES) {
   else ok("submissions has the AI-judge columns");
 }
 {
+  const players = await server.from("players").select("is_bot").limit(0);
+  const rooms = await server.from("rooms").select("tier_overrides").limit(0);
+  const error = players.error ?? rooms.error;
+  if (error) bad("rooms/players have the host-tools columns", `${error.message} — run supabase/migrations/0004_host_tools.sql.`);
+  else ok("rooms/players have the host-tools columns");
+}
+{
+  const { error } = await server.from("answer_tiers").select("prompt_id, canonical, tier").limit(0);
+  if (error) bad("answer_tiers exists (permanent tier changes)", `${error.message} — run supabase/migrations/0005_answer_tiers.sql.`);
+  else ok("answer_tiers exists (permanent tier changes)");
+}
+{
   const key = `check:${Math.random().toString(36).slice(2, 10)}`;
   const { data, error } = await server.rpc("judge_take_call", { p_key: key, p_limit: 1 });
   if (error || data !== true) bad("server can call judge_take_call()", `${error?.message ?? "unexpected result"} — run supabase/migrations/0003_judge.sql.`);

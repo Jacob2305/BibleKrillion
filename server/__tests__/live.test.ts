@@ -1,9 +1,12 @@
+import { MemoryTierStore, type TierStore } from "../tier-store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LiveAnswerResponse, LiveHostResponse, LiveJoinResponse, LiveSnapshot, LiveStateResponse } from "../../lib/game/live-types";
 import { pointsForTier } from "../../lib/game/scoring";
 import { getPrompt, matchPrompt } from "../bank";
 import { SUBMIT_GRACE_MS } from "../config";
+import { EVENT_PROMPT_IDS } from "../event-set";
 import { LIVE_MESSAGES, MAX_PLAYERS, createLiveHandler } from "../live";
+import { BOT_NAMES, botPick, visibleSubs } from "../live-bots";
 import type { Broadcaster } from "../live-broadcast";
 import { MemoryLiveStore } from "../live-store";
 
@@ -21,7 +24,7 @@ function typoFor(promptId: string): { typo: string; canonical: string } {
   throw new Error(`no typo-able answer for ${promptId}`);
 }
 
-function setup() {
+function setup(opts: { bots?: number; tiers?: TierStore } = {}) {
   const clock = { t: T0 };
   let seed = 7;
   const random = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
@@ -41,6 +44,8 @@ function setup() {
       sleeps.push(ms);
       clock.t += ms;
     },
+    bots: opts.bots,
+    tiers: opts.tiers ? () => opts.tiers! : undefined,
   });
   async function call<T = unknown>(body: unknown): Promise<{ status: number; data: T }> {
     const res = await handler(new Request("http://test/api/live", { method: "POST", body: JSON.stringify(body) }));
@@ -83,15 +88,26 @@ afterEach(() => {
 });
 
 describe("creating a room", () => {
-  it("returns a host token, a 4-letter code and 7 distinct prompts", async () => {
+  it("returns a host token, a 4-letter code and the event's 12 prompts in order", async () => {
     const env = setup();
     const { status, data } = await env.create();
     expect(status).toBe(200);
     expect(data.snapshot.code).toMatch(/^[BCDFGHJKLMNPQRSTVWXZ]{4}$/);
-    expect(data.snapshot).toMatchObject({ phase: "lobby", roundIndex: -1, roundCount: 7, playerCount: 0, closed: false });
-    expect(new Set(data.host.prompts.map((p) => p.id)).size).toBe(7);
-    expect(new Set(data.host.prompts.map((p) => p.category)).size).toBe(7);
+    expect(data.snapshot).toMatchObject({ phase: "lobby", roundIndex: -1, roundCount: 12, playerCount: 0, closed: false });
+    expect(data.host.prompts.map((p) => p.id)).toEqual([...EVENT_PROMPT_IDS]);
     expect(data.realtime?.topic).toMatch(/^room:/);
+  });
+
+  it("every event prompt exists in the bank, with no repeats", () => {
+    expect(EVENT_PROMPT_IDS).toHaveLength(12);
+    expect(new Set(EVENT_PROMPT_IDS).size).toBe(12);
+    for (const id of EVENT_PROMPT_IDS) expect(getPrompt(id), id).toBeDefined();
+  });
+
+  it("fewer rounds play the first N event prompts", async () => {
+    const env = setup();
+    const { data } = await env.create({ rounds: 5 });
+    expect(data.host.prompts.map((p) => p.id)).toEqual(EVENT_PROMPT_IDS.slice(0, 5));
   });
 
   it("clamps the settings", async () => {
@@ -314,11 +330,11 @@ describe("team standings", () => {
 describe("host tools", () => {
   it("changes settings and swaps prompts in the lobby", async () => {
     const env = setup();
-    const { data: room } = await env.create();
+    const { data: room } = await env.create({ rounds: 7 });
     const { data: s } = await env.hostOp(room.hostToken, "settings", { rounds: 9, seconds: 40, teams: true });
     expect(s.snapshot).toMatchObject({ roundCount: 9, seconds: 40, teams: true });
-    expect(s.host.prompts.slice(0, 7).map((p) => p.id)).toEqual(room.host.prompts.map((p) => p.id));
-    expect(new Set(s.host.prompts.map((p) => p.id)).size).toBe(9);
+    // Growing the list continues the event set in order.
+    expect(s.host.prompts.map((p) => p.id)).toEqual(EVENT_PROMPT_IDS.slice(0, 9));
 
     const { data: swapped } = await env.hostOp(room.hostToken, "swap", { index: 2 });
     expect(swapped.host.prompts[2]!.id).not.toBe(s.host.prompts[2]!.id);
@@ -386,5 +402,151 @@ describe("host tools", () => {
     env.clock.t += 13 * 60 * 60 * 1000;
     expect((await env.join(room.snapshot.code, "Late")).status).toBe(404);
     expect((await env.hostOp(room.hostToken, "start")).status).toBe(410);
+  });
+});
+
+describe("test bots", () => {
+  it("join every room (unless turned off) and are marked as bots for the host", async () => {
+    const env = setup({ bots: 2 });
+    const { data } = await env.create();
+    expect(data.snapshot.playerCount).toBe(2);
+    expect(data.snapshot.players?.map((p) => p.nickname)).toEqual([...BOT_NAMES]);
+    expect(data.host.players.every((p) => p.bot)).toBe(true);
+    expect((await env.create({ bots: false })).data.snapshot.playerCount).toBe(0);
+  });
+
+  it("answer each prompt, show as locked in only after their answer time, and score at the reveal", async () => {
+    const env = setup({ bots: 2 });
+    const { data: room } = await env.create({ seconds: 30 });
+    const ann = (await env.join(room.snapshot.code, "Ann")).data;
+    const { data: started } = await env.hostOp(room.hostToken, "start");
+    expect(started.snapshot.answeredCount).toBe(0); // nobody yet at t = 0
+    expect(started.host.players.find((p) => p.nickname === "Ann")!.bot).toBeUndefined();
+
+    const roomId = (await env.store.findOpenRoom(room.snapshot.code, env.clock.t))!.id;
+    const subs = await env.store.listSubmissions(roomId);
+    expect(subs.length).toBeGreaterThan(0); // stored as the prompt opens…
+    for (const s of subs) expect(s.ms).toBeGreaterThan(0); // …timed inside the window
+
+    env.clock.t += 30_000;
+    expect((await env.stateOf(ann.playerToken)).data.snapshot.answeredCount).toBe(subs.length);
+    const { data: revealed } = await env.hostOp(room.hostToken, "reveal");
+    expect(revealed.snapshot.reveal!.answered).toBe(subs.length);
+    const botRows = revealed.snapshot.leaderboard!.filter((r) => r.nickname.startsWith("Bot "));
+    expect(botRows).toHaveLength(2);
+    for (const s of subs) expect(botRows.find((r) => r.id === s.playerId)!.total).toBe(s.points);
+  });
+
+  it("don't hold the timer open: it closes once every real player has answered", async () => {
+    const env = setup({ bots: 2 });
+    const { data: room } = await env.create();
+    const ann = (await env.join(room.snapshot.code, "Ann")).data;
+    const { data: started } = await env.hostOp(room.hostToken, "start");
+    env.clock.t += 1000;
+    await env.answer(ann.playerToken, 0, answerFor(started.host.prompts[0]!.id).text);
+    expect(env.sent.at(-1)!.snapshot.question!.deadline).toBe(env.clock.t);
+  });
+
+  it("pick right answers across many tiers, and sometimes miss", () => {
+    const prompt = getPrompt("foreign-rulers")!;
+    let seed = 11;
+    const random = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+    const picks = Array.from({ length: 400 }, () => botPick(prompt, random));
+    const misses = picks.filter((p) => p === null).length;
+    expect(misses).toBeGreaterThan(20);
+    expect(misses).toBeLessThan(120);
+    const tiers = new Set(picks.filter((p) => p !== null).map((p) => p!.tier));
+    expect(tiers.size).toBe(new Set(prompt.answers.map((a) => a.tier)).size);
+    for (const p of picks) if (p) expect(prompt.answers).toContain(p);
+  });
+
+  it("visibleSubs hides a bot's answer until its time, but only during the open prompt", () => {
+    const players = [{ id: "b", roomId: "r", nickname: "Bot", nameKey: "bot", team: null, kicked: false, joinedAt: 0, bot: true }];
+    const sub = { roomId: "r", roundIndex: 0, playerId: "b", raw: "x", canonical: "x", tier: "rare" as const, points: 60, ms: 5000, ai: false, reference: null };
+    expect(visibleSubs([sub], players, { phase: "question", roundIndex: 0, openedAt: 1000 }, 3000)).toEqual([]);
+    expect(visibleSubs([sub], players, { phase: "question", roundIndex: 0, openedAt: 1000 }, 6000)).toHaveLength(1);
+    expect(visibleSubs([sub], players, { phase: "reveal", roundIndex: 0, openedAt: 1000 }, 3000)).toHaveLength(1);
+  });
+});
+
+describe("host answer list and re-tiering", () => {
+  it("shows every answer for a prompt to the host only, grouped by this room's tiers", async () => {
+    const env = setup();
+    const { data: room } = await env.create();
+    const { data } = await env.hostOp(room.hostToken, "answers", { index: 1 });
+    const prompt = getPrompt(EVENT_PROMPT_IDS[1]!)!;
+    expect(data.host.answers).toMatchObject({ index: 1, promptId: prompt.id, prompt: prompt.prompt });
+    expect(data.host.answers!.answers).toHaveLength(prompt.answers.length);
+    expect(leaksAnswers(data.snapshot)).toBe(false);
+    // Reading answers is not an action: nothing is broadcast.
+    expect(env.sent).toHaveLength(0);
+    expect((await env.hostOp(room.hostToken, "answers", { index: 99 })).status).toBe(400);
+  });
+
+  it("moving an answer to another tier changes its points, the reveal and the leaderboard, even after answering", async () => {
+    const env = setup();
+    const { room, players, promptIds } = await startedRoom(env);
+    const easy = answerFor(promptIds[0]!, "plankton");
+    await env.answer(players[0]!.playerToken, 0, easy.text);
+
+    const { data: moved } = await env.hostOp(room.hostToken, "retier", { index: 0, canonical: easy.text, tier: "deep_cut" });
+    const row = moved.host.answers!.answers.find((a) => a.canonical === easy.text)!;
+    expect(row).toMatchObject({ tier: "deep_cut", baseTier: "plankton", points: pointsForTier("deep_cut"), count: 1 });
+    // Players and the projector never get the list mid-prompt.
+    expect(leaksAnswers(env.sent.at(-1)!.snapshot)).toBe(false);
+
+    env.clock.t += 30_000;
+    const { data: revealed } = await env.hostOp(room.hostToken, "reveal");
+    const shown = revealed.snapshot.reveal!.reveal.answers.find((a) => a.canonical === easy.text)!;
+    expect(shown).toMatchObject({ tier: "deep_cut", points: pointsForTier("deep_cut") });
+    expect(revealed.snapshot.reveal!.finders[easy.text]).toEqual(["Ann"]);
+    expect(revealed.snapshot.leaderboard![0]).toMatchObject({ nickname: "Ann", total: pointsForTier("deep_cut") });
+
+    // Moving it back to its bank tier removes the override.
+    const { data: back } = await env.hostOp(room.hostToken, "retier", { index: 0, canonical: easy.text, tier: "plankton" });
+    expect(back.snapshot.leaderboard![0]).toMatchObject({ nickname: "Ann", total: easy.points });
+    expect((await env.store.getRoom((await env.store.findOpenRoom(room.snapshot.code, env.clock.t))!.id))!.tierOverrides).toEqual({});
+  });
+
+  it("answers given after a move score at the new tier", async () => {
+    const env = setup();
+    const { room, players, promptIds } = await startedRoom(env);
+    const easy = answerFor(promptIds[0]!, "plankton");
+    await env.hostOp(room.hostToken, "retier", { index: 0, canonical: easy.text, tier: "rare" });
+    await env.answer(players[1]!.playerToken, 0, easy.text);
+    env.clock.t += 30_000;
+    const { data } = await env.hostOp(room.hostToken, "reveal");
+    expect(data.snapshot.leaderboard!.find((r) => r.nickname === "Bo")!.total).toBe(pointsForTier("rare"));
+  });
+
+  it("a move is permanent: saved to the shared tier list and used by the next room", async () => {
+    const tiers = new MemoryTierStore();
+    const env = setup({ tiers });
+    const first = await startedRoom(env);
+    const easy = answerFor(first.promptIds[0]!, "plankton");
+    await env.hostOp(first.room.hostToken, "retier", { index: 0, canonical: easy.text, tier: "rare" });
+    expect(await tiers.all()).toEqual({ [first.promptIds[0]!]: { [easy.text]: "rare" } });
+    await env.hostOp(first.room.hostToken, "end");
+
+    // A brand-new room (same prompt list) scores it at the new tier from the start.
+    const second = await startedRoom(env);
+    expect(second.promptIds[0]).toBe(first.promptIds[0]);
+    const { data: listed } = await env.hostOp(second.room.hostToken, "answers", { index: 0 });
+    expect(listed.host.answers!.answers.find((a) => a.canonical === easy.text)).toMatchObject({ tier: "rare", baseTier: "plankton" });
+    await env.answer(second.players[0]!.playerToken, 0, easy.text);
+    env.clock.t += 30_000;
+    const { data } = await env.hostOp(second.room.hostToken, "reveal");
+    expect(data.snapshot.leaderboard![0]).toMatchObject({ nickname: "Ann", total: pointsForTier("rare") });
+
+    // Moving it back to the bank's tier clears the saved change.
+    await env.hostOp(second.room.hostToken, "retier", { index: 0, canonical: easy.text, tier: "plankton" });
+    expect(await tiers.all()).toEqual({});
+  });
+
+  it("rejects unknown answers and tiers", async () => {
+    const env = setup();
+    const { data: room } = await env.create();
+    expect((await env.hostOp(room.hostToken, "retier", { index: 0, canonical: "Nobody at all", tier: "rare" })).status).toBe(404);
+    expect((await env.hostOp(room.hostToken, "retier", { index: 0, canonical: "x", tier: "legendary" })).status).toBe(400);
   });
 });

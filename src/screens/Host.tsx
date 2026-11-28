@@ -1,8 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { APP_NAME } from "../../lib/game/brand";
 import { normalizeRoomCode } from "../../lib/game/live";
-import type { LiveHostInfo, LiveHostOp, LiveSnapshot } from "../../lib/game/live-types";
-import { PROMPTS_PER_DIVE } from "../../lib/game/scoring";
+import type { LiveHostInfo, LiveHostOp, LiveHostResponse, LiveSnapshot } from "../../lib/game/live-types";
 import { BigButton } from "../game/DivePlayer";
 import { TierBadge } from "../game/TierBadge";
 import { TimerBar } from "../game/TimerBar";
@@ -11,10 +10,13 @@ import { Link } from "../lib/router";
 import { addHostedRoom, getHostedRooms, removeHostedRoom } from "../lib/storage";
 import { useCountdown } from "../lib/useCountdown";
 import { joinDisplayUrl, joinUrl, liveApi } from "../live/liveApi";
+import { HostAnswers } from "../live/HostAnswers";
 import { ConnectionNote, Leaderboard, Podium, QrCode, TeamBoard } from "../live/ui";
 import { useLiveRoom, type LiveData } from "../live/useLiveRoom";
 
 const ROUND_OPTIONS = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+/** New rooms play the whole event set (server/event-set.ts). */
+const DEFAULT_ROUNDS = 12;
 const SECOND_OPTIONS = [10, 15, 20, 25, 30, 40, 45, 60];
 
 interface Active {
@@ -62,7 +64,7 @@ export default function Host() {
 // ───────────────────────── setup ─────────────────────────
 
 function Setup({ onCreated, onResume }: { onCreated: (data: Awaited<ReturnType<typeof liveApi.create>>) => void; onResume: (code: string, token: string) => void }) {
-  const [rounds, setRounds] = useState(PROMPTS_PER_DIVE);
+  const [rounds, setRounds] = useState(DEFAULT_ROUNDS);
   const [seconds, setSeconds] = useState(25);
   const [teams, setTeams] = useState(false);
   const [pin, setPin] = useState("");
@@ -90,12 +92,9 @@ function Setup({ onCreated, onResume }: { onCreated: (data: Awaited<ReturnType<t
   return (
     <Page>
       <h1 className="font-display text-4xl font-bold">Host a live ascent</h1>
-      <p className="mt-2 text-lg text-cloud-50/80">
-        Put the room on a projector; everyone plays on their phone. Up to 150 players.
-      </p>
       {urlCode && (
         <p className="mt-4 rounded-xl bg-amber-900/40 px-3 py-2 text-amber-100 ring-2 ring-amber-300/30">
-          This browser isn't the host of room {urlCode}. Open the host link on the device that created it, or start a new room.
+          This browser isn't the host of room {urlCode}.
         </p>
       )}
 
@@ -155,7 +154,7 @@ function Setup({ onCreated, onResume }: { onCreated: (data: Awaited<ReturnType<t
         <label className="flex items-center gap-3">
           <input type="checkbox" checked={teams} onChange={(e) => setTeams(e.target.checked)} className="h-5 w-5 accent-teal-400" />
           <span>
-            Teams <span className="text-sm text-cloud-50/60">(players type a team name; teams rank by average depth)</span>
+            Teams
           </span>
         </label>
         {needsPin && (
@@ -177,7 +176,6 @@ function Setup({ onCreated, onResume }: { onCreated: (data: Awaited<ReturnType<t
           </p>
         )}
         <BigButton type="submit">{busy ? "Creating…" : "Create room"}</BigButton>
-        <p className="text-sm text-cloud-50/50">You can change prompts and settings in the lobby before starting.</p>
       </form>
     </Page>
   );
@@ -204,6 +202,10 @@ function Console({ active, onExit }: { active: Active; onExit: () => void }) {
       setBusy(null);
     }
   };
+
+  const answersFor: AnswersFor = (index) => (
+    <HostAnswers token={active.token} index={index} version={snap?.version ?? 0} onAccept={(data: LiveHostResponse) => room.accept(data)} />
+  );
 
   if (fatal) {
     return (
@@ -241,7 +243,6 @@ function Console({ active, onExit }: { active: Active; onExit: () => void }) {
           <Link href="/" className="rounded-lg px-1 py-1 text-cloud-50/70 hover:text-cloud-50 focus-visible:outline-2 focus-visible:outline-sun-300">
             ← {APP_NAME}
           </Link>
-          <span className="text-cloud-50/60">Host console · keep this tab open</span>
           <ConnectionNote connection={room.connection} error={room.error} />
         </header>
 
@@ -255,9 +256,6 @@ function Console({ active, onExit }: { active: Active; onExit: () => void }) {
             >
               Open projector screen ↗
             </button>
-            <p className="text-xs text-cloud-50/50">
-              Drag that window to the projector and press F11 (or use its full-screen button). It updates by itself.
-            </p>
           </aside>
 
           <main className="min-w-0 space-y-6">
@@ -266,7 +264,7 @@ function Console({ active, onExit }: { active: Active; onExit: () => void }) {
                 This room has ended. <button type="button" onClick={onExit} className="underline">Host another room</button>
               </p>
             )}
-            <PhasePanel snap={snap} busy={busy} act={act} toLocal={room.toLocal} />
+            <PhasePanel snap={snap} busy={busy} act={act} toLocal={room.toLocal} answers={answersFor} />
             {actionError && (
               <p role="alert" className="text-amber-200">
                 {actionError}
@@ -274,13 +272,13 @@ function Console({ active, onExit }: { active: Active; onExit: () => void }) {
             )}
             <Players snap={snap} host={host} act={act} />
             <AiAnswers host={host} act={act} />
-            <Prompts snap={snap} host={host} act={act} busy={busy} />
+            <Prompts snap={snap} host={host} act={act} busy={busy} answers={answersFor} />
             {!snap.closed && (
               <div className="border-t border-white/10 pt-4">
                 <button
                   type="button"
                   onClick={() => {
-                    if (window.confirm(`End room ${snap.code}? Nobody can join or answer after this.`)) void act("end");
+                    if (window.confirm(`End room ${snap.code}?`)) void act("end");
                   }}
                   className="rounded-xl px-4 py-2 text-sm text-rose-200 ring-2 ring-rose-300/40 hover:bg-rose-950/50"
                 >
@@ -306,17 +304,34 @@ function JoinCard({ code }: { code: string }) {
 }
 
 type Act = (op: LiveHostOp, extra?: Record<string, unknown>) => Promise<void>;
+/** Renders the full answer board for one prompt (host only). */
+type AnswersFor = (index: number) => ReactNode;
+
+/** The current prompt's full answer list, folded away until the host opens it. */
+function AllAnswers({ index, answers }: { index: number; answers: AnswersFor }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="rounded-2xl bg-night-950/60 ring-2 ring-white/10" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className="cursor-pointer px-4 py-3 font-semibold focus-visible:outline-2 focus-visible:outline-sun-300">
+        All answers
+      </summary>
+      {open && <div className="px-3 pb-3">{answers(index)}</div>}
+    </details>
+  );
+}
 
 function PhasePanel({
   snap,
   busy,
   act,
   toLocal,
+  answers,
 }: {
   snap: LiveSnapshot;
   busy: LiveHostOp | null;
   act: Act;
   toLocal: (ms: number) => number;
+  answers: AnswersFor;
 }) {
   const isLast = snap.roundIndex + 1 >= snap.roundCount;
   const nextButton = isLast ? (
@@ -340,7 +355,12 @@ function PhasePanel({
       );
 
     case "question":
-      return <QuestionPanel snap={snap} busy={busy} act={act} deadline={toLocal(snap.question!.deadline)} />;
+      return (
+        <>
+          <QuestionPanel snap={snap} busy={busy} act={act} deadline={toLocal(snap.question!.deadline)} />
+          <AllAnswers key={snap.roundIndex} index={snap.roundIndex} answers={answers} />
+        </>
+      );
 
     case "reveal": {
       const reveal = snap.reveal!;
@@ -365,6 +385,7 @@ function PhasePanel({
               </li>
             ))}
           </ul>
+          <AllAnswers key={snap.roundIndex} index={snap.roundIndex} answers={answers} />
           <div className="grid gap-3 sm:grid-cols-2">
             <BigButton onClick={() => void act("leaderboard")}>{busy === "leaderboard" ? "…" : "Show leaderboard"}</BigButton>
             {nextButton}
@@ -425,7 +446,7 @@ function QuestionPanel({ snap, busy, act, deadline }: { snap: LiveSnapshot; busy
         </div>
       ) : (
         <BigButton onClick={() => void act("reveal")} autoFocus>
-          {busy === "reveal" ? "Revealing…" : "Time's up: reveal answers"}
+          {busy === "reveal" ? "Revealing…" : "Reveal answers"}
         </BigButton>
       )}
     </Panel>
@@ -482,12 +503,13 @@ function Players({ snap, host, act }: { snap: LiveSnapshot; host: LiveHostInfo; 
             </span>
             <span className={`min-w-0 flex-1 truncate ${p.kicked ? "line-through" : ""}`}>
               {p.nickname}
+              {p.bot && <span className="ml-2 text-xs text-cloud-50/50">bot</span>}
               {p.team && <span className="ml-2 text-xs text-cloud-50/50">{p.team}</span>}
             </span>
             <button
               type="button"
               onClick={() => {
-                if (p.kicked || window.confirm(`Remove “${p.nickname}” from the room? They'll disappear from the screen and leaderboard.`)) {
+                if (p.kicked || window.confirm(`Remove “${p.nickname}”?`)) {
                   void act(p.kicked ? "unkick" : "kick", { playerId: p.id });
                 }
               }}
@@ -510,10 +532,6 @@ function AiAnswers({ host, act }: { host: LiveHostInfo; act: Act }) {
       <summary className="cursor-pointer px-5 py-4 font-semibold focus-visible:outline-2 focus-visible:outline-sun-300">
         ✨ AI-judged answers ({host.aiAnswers.length}){pending > 0 && <span className="font-normal text-sun-300"> · {pending} to check</span>}
       </summary>
-      <p className="px-5 text-sm text-cloud-50/60">
-        Not in the answer list, but the AI judge accepted them (Deep Cut, 85 pts). Approve to keep them for future games; reject to
-        take the points away in this room.
-      </p>
       <ul className="space-y-2 px-5 py-4">
         {host.aiAnswers.map((a) => (
           <li key={`${a.roundIndex}|${a.canonical}`} className="flex flex-wrap items-center gap-3 rounded-xl bg-night-950/60 px-3 py-2">
@@ -534,7 +552,7 @@ function AiAnswers({ host, act }: { host: LiveHostInfo; act: Act }) {
                 <button
                   type="button"
                   onClick={() => {
-                    if (window.confirm(`Reject “${a.canonical}”? Players who gave it lose those points in this room.`)) {
+                    if (window.confirm(`Reject “${a.canonical}”?`)) {
                       void act("ai_reject", { roundIndex: a.roundIndex, canonical: a.canonical });
                     }
                   }}
@@ -555,37 +573,53 @@ function AiAnswers({ host, act }: { host: LiveHostInfo; act: Act }) {
   );
 }
 
-function Prompts({ snap, host, act, busy }: { snap: LiveSnapshot; host: LiveHostInfo; act: Act; busy: LiveHostOp | null }) {
+function Prompts({ snap, host, act, busy, answers }: { snap: LiveSnapshot; host: LiveHostInfo; act: Act; busy: LiveHostOp | null; answers: AnswersFor }) {
+  const [expanded, setExpanded] = useState<number | null>(null);
   return (
-    <details className="rounded-3xl bg-night-950/75 ring-2 ring-white/10">
+    <details className="rounded-3xl bg-night-950/75 ring-2 ring-white/10" open={snap.phase === "lobby"}>
       <summary className="cursor-pointer px-5 py-4 font-semibold focus-visible:outline-2 focus-visible:outline-sun-300">
-        Prompts <span className="font-normal text-cloud-50/50">(host only: don't show this on the projector)</span>
+        Prompts
       </summary>
       <ol className="space-y-1 px-5 pb-4">
         {host.prompts.map((p) => {
           const done = p.index < snap.roundIndex || (p.index === snap.roundIndex && snap.phase !== "question");
           const current = p.index === snap.roundIndex && snap.phase === "question";
           const upcoming = p.index > snap.roundIndex && snap.phase !== "final" && !snap.closed;
+          const open = expanded === p.index;
           return (
-            <li key={p.index} className="flex items-center gap-3 rounded-xl px-2 py-1.5">
-              <span className="w-6 text-right font-mono text-cloud-50/50 tabular-nums">{p.index + 1}</span>
-              <span className="w-5 text-center" aria-hidden="true">
-                {done ? "✓" : current ? "▶" : ""}
-              </span>
-              <span className={`min-w-0 flex-1 ${done ? "text-cloud-50/50" : ""}`}>
-                {p.prompt}
-                <span className="ml-2 text-xs text-cloud-50/40">{p.category}</span>
-              </span>
-              {upcoming && (
+            <li key={p.index} className="rounded-xl px-2 py-1.5">
+              <div className="flex items-center gap-3">
+                <span className="w-6 text-right font-mono text-cloud-50/50 tabular-nums">{p.index + 1}</span>
+                <span className="w-5 text-center" aria-hidden="true">
+                  {done ? "✓" : current ? "▶" : ""}
+                </span>
+                <span className={`min-w-0 flex-1 ${done ? "text-cloud-50/50" : ""}`}>
+                  {p.prompt}
+                  <span className="ml-2 text-xs text-cloud-50/40">{p.category}</span>
+                </span>
                 <button
                   type="button"
-                  disabled={busy === "swap"}
-                  onClick={() => void act("swap", { index: p.index })}
-                  className="rounded-lg px-2 py-1 text-xs ring-2 ring-white/20 hover:bg-white/10 disabled:opacity-50"
+                  aria-expanded={open}
+                  onClick={() => setExpanded(open ? null : p.index)}
+                  className="rounded-lg px-2 py-1 text-xs ring-2 ring-white/20 hover:bg-white/10"
                 >
-                  Swap
+                  {open ? "Hide answers" : "Answers"}
                 </button>
-              )}
+                {upcoming && (
+                  <button
+                    type="button"
+                    disabled={busy === "swap"}
+                    onClick={() => {
+                      if (open) setExpanded(null);
+                      void act("swap", { index: p.index });
+                    }}
+                    className="rounded-lg px-2 py-1 text-xs ring-2 ring-white/20 hover:bg-white/10 disabled:opacity-50"
+                  >
+                    Swap
+                  </button>
+                )}
+              </div>
+              {open && <div className="mt-2 mb-3">{answers(p.index)}</div>}
             </li>
           );
         })}

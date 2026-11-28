@@ -19,6 +19,7 @@
     "format-bank": "tsx scripts/format-bank.ts",
     "check-supabase": "tsx scripts/check-supabase.ts",
     "merge-approved": "tsx scripts/merge-approved.ts",
+    "merge-tiers": "tsx scripts/merge-tiers.ts",
     "check-judge": "tsx scripts/check-judge.ts",
     "load-test": "tsx scripts/load-test.ts"
   },

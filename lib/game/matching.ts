@@ -7,19 +7,26 @@
  * Rules:
  *  - Input and every bank term (canonical + aliases) go through `normalizeAnswer`.
  *  - An exact or alias match always beats a fuzzy one.
- *  - Fuzzy matching uses Levenshtein distance: ≤1 edit when the bank term is
- *    ≤5 characters, ≤2 edits when it is longer. Terms and inputs shorter than
- *    3 characters ("Ai", "Ur") must match exactly, so "a" can't fuzzy-match "ai".
- *  - If two or more DIFFERENT answers tie for the closest fuzzy distance, the
- *    result is "ambiguous": rejected, and the player is asked to be more specific.
- *    A strictly closer answer wins ("1 king" -> 1 Kings, distance 1, beats 2 Kings, distance 2).
+ *  - Fuzzy matching is lenient (the server always asks "Did you mean …?" before
+ *    accepting a fuzzy match, so a generous guess costs nothing):
+ *      · edit distance where a swapped letter pair counts as 1 edit,
+ *      · also compared on a sound-alike spelling ("Zakeus" ~ "Zacchaeus",
+ *        "Thesalonika" ~ "Thessalonica"), taking whichever is closer,
+ *      · allowance grows with the term: 1 edit for 3–4 letters, 2 for 5–7,
+ *        3 for 8–11, 4 for longer.
+ *    A correction of 2+ edits must start with the same sound as the input.
+ *    Terms and inputs shorter than 3 characters ("Ai", "Ur") must match exactly.
+ *  - A strictly closer answer wins ("1 king" -> 1 Kings beats 2 Kings). A tie
+ *    for closest is broken by: fewer raw edits, then same first sound.
+ *    Only a tie that survives all of that is "ambiguous"
+ *    (rejected; the player is asked to be more specific).
  *  - If the same exact term somehow belongs to two answers (a bank error the
  *    validator catches), that is also "ambiguous".
  *  - Shared names are modelled in the BANK, not here: "James" is its own answer
  *    (low tier, `generic_for` the specific Jameses), and "James son of Alphaeus"
  *    is a separate, higher-tier answer. Being more specific earns more points.
  */
-import { levenshtein } from "./levenshtein.js";
+import { levenshtein, typoDistance } from "./levenshtein.js";
 import { normalizeAnswer } from "./normalize.js";
 
 export interface MatchableAnswer {
@@ -41,7 +48,43 @@ export const MIN_FUZZY_LENGTH = 3;
 export function maxEditsFor(normalizedTerm: string): number {
   const len = Array.from(normalizedTerm).length;
   if (len < MIN_FUZZY_LENGTH) return 0;
-  return len <= 5 ? 1 : 2;
+  if (len <= 4) return 1;
+  if (len <= 7) return 2;
+  if (len <= 11) return 3;
+  return 4;
+}
+
+/**
+ * A rough sound-alike spelling of a normalized term, so spellings that sound
+ * right still land: ph/f, ch/k, c/k/s, z/s, y/i, ae/e, silent h, doubled letters.
+ */
+export function soundSkeleton(normalized: string): string {
+  return normalized
+    .replace(/ph/g, "f")
+    .replace(/ch/g, "k")
+    .replace(/ck/g, "k")
+    .replace(/th/g, "t")
+    .replace(/[ao]e/g, "e")
+    .replace(/q/g, "k")
+    .replace(/c(?=[eiy])/g, "s")
+    .replace(/c/g, "k")
+    .replace(/x/g, "ks")
+    .replace(/z/g, "s")
+    .replace(/y/g, "i")
+    .replace(/([^aeiou\s])h/g, "$1")
+    .replace(/(.)\1+/g, "$1");
+}
+
+/** First letter of a sound skeleton, ignoring a leading book number ("1 kings" -> "k"). */
+function firstSound(skel: string): string | undefined {
+  return skel.replace(/^[\d\s]+/, "")[0];
+}
+
+/** Fuzzy distance used for matching: the closer of the raw and sound-alike comparisons. */
+function fuzzyDistance(input: string, inputSkel: string, term: string, termSkel: string, max: number): number {
+  const raw = typoDistance(input, term, max);
+  if (raw <= 1) return raw;
+  return Math.min(raw, typoDistance(inputSkel, termSkel, max));
 }
 
 /** All normalized, de-duplicated terms (canonical first, then aliases) for one answer. */
@@ -97,12 +140,12 @@ export function buildMatcher<A extends MatchableAnswer>(
   options: MatcherOptions = {},
 ): Matcher<A> {
   const stripPrefixes = options.stripPrefixes ?? [];
-  const entries: { term: string; index: number; maxEdits: number }[] = [];
+  const entries: { term: string; skel: string; index: number; maxEdits: number }[] = [];
   const exact = new Map<string, Set<number>>();
 
   answers.forEach((answer, index) => {
     for (const term of termsFor(answer)) {
-      entries.push({ term, index, maxEdits: maxEditsFor(term) });
+      entries.push({ term, skel: soundSkeleton(term), index, maxEdits: maxEditsFor(term) });
       let owners = exact.get(term);
       if (!owners) exact.set(term, (owners = new Set()));
       owners.add(index);
@@ -125,28 +168,44 @@ export function buildMatcher<A extends MatchableAnswer>(
       return { kind: "ambiguous", via: "exact", candidates: indexes.map((i) => answers[i]!) };
     }
 
-    // 2. Fuzzy match: closest distance per answer, within that term's allowance.
-    const best = new Map<number, { distance: number; term: string }>();
+    // 2. Fuzzy match: best (distance, tie-break key) per answer, within that term's allowance.
+    type Hit = { distance: number; term: string; key: [number, number] };
+    const better = (a: Hit, b: Hit) => {
+      if (a.distance !== b.distance) return a.distance - b.distance;
+      for (let k = 0; k < 2; k++) if (a.key[k] !== b.key[k]) return a.key[k]! - b.key[k]!;
+      return 0;
+    };
+    const best = new Map<number, Hit>();
     for (const variant of variants) {
       if (Array.from(variant).length < MIN_FUZZY_LENGTH) continue;
-      for (const { term, index, maxEdits } of entries) {
+      const variantSkel = soundSkeleton(variant);
+      for (const { term, skel, index, maxEdits } of entries) {
         if (maxEdits === 0) continue;
-        const distance = levenshtein(variant, term, maxEdits);
+        const distance = fuzzyDistance(variant, variantSkel, term, skel, maxEdits);
         if (distance > maxEdits) continue;
+        // Bigger corrections must at least start with the same sound ("Elijah" is not "Urijah").
+        if (distance >= 2 && firstSound(variantSkel) !== firstSound(skel)) continue;
+        const hit: Hit = {
+          distance,
+          term,
+          key: [
+            typoDistance(variant, term, maxEdits + 2),
+            firstSound(variantSkel) === firstSound(skel) ? 0 : 1,
+          ],
+        };
         const current = best.get(index);
-        if (!current || distance < current.distance) best.set(index, { distance, term });
+        if (!current || better(hit, current) < 0) best.set(index, hit);
       }
     }
     if (best.size === 0) return { kind: "no_match" };
 
-    let minDistance = Number.POSITIVE_INFINITY;
-    for (const { distance } of best.values()) minDistance = Math.min(minDistance, distance);
-    const closest = [...best.entries()].filter(([, v]) => v.distance === minDistance);
-
-    if (closest.length > 1) {
-      return { kind: "ambiguous", via: "fuzzy", candidates: closest.map(([i]) => answers[i]!) };
+    const ranked = [...best.entries()].sort(([, a], [, b]) => better(a, b));
+    const top = ranked[0]![1];
+    const tied = ranked.filter(([, h]) => better(h, top) === 0);
+    if (tied.length > 1) {
+      return { kind: "ambiguous", via: "fuzzy", candidates: tied.map(([i]) => answers[i]!) };
     }
-    const [index, { term, distance }] = closest[0]!;
+    const [index, { term, distance }] = ranked[0]!;
     return { kind: "fuzzy", answer: answers[index]!, index, term, distance };
   };
 }

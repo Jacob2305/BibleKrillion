@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { TIER_INFO, TIER_ORDER, type ResultTier } from "../../lib/game/scoring";
 import { RevealHud, World, useRevealClimb } from "../game/climb/Climb";
+import { ProjectorRevealDemo } from "./Screen";
 
 /** /dev/climb (dev server only): play the reveal climb for any tier. */
 export default function ClimbPreview() {
@@ -9,6 +10,9 @@ export default function ClimbPreview() {
   const [stage, setStage] = useState(params.get("size") === "stage");
   const [run, setRun] = useState(0);
   const climb = useRevealClimb({ tier: tier ?? "miss", active: tier !== null, roundKey: run, size: stage ? "stage" : "phone" });
+  // ?room=1 plays the projector's staged room climb (?room=none: nobody scored).
+  const room = params.get("room");
+  if (room !== null) return <ProjectorRevealDemo nobody={room === "none"} />;
   // ?zone=N shows one zone of the map, still, with no HUD (for checking the art).
   const zone = params.get("zone");
   if (zone !== null) return <World target={Number(zone)} instant />;

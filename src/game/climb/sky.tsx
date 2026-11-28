@@ -93,7 +93,8 @@ export function OpenSky() {
       {/* a flock of doves in a V, each flapping on its own beat */}
       {[0, 1, 2, 3, 4, 5, 6].map((i) => {
         const back = Math.abs(i - 3);
-        const style: CSSProperties = { left: `calc(12% + ${px(i * 11)})`, bottom: `calc(74% + ${px(-back * 6)})` };
+        // Wide gaps on big screens; on narrow phones the step shrinks to a share of the width.
+        const style: CSSProperties = { left: `calc(6% + ${i} * min(12%, ${px(24)}))`, bottom: `calc(76% + ${px(-back * 10)})` };
         const delay = { animationDelay: `${-((i * 0.37) % 0.24)}s` };
         return (
           <div key={i} className="absolute" style={style}>
