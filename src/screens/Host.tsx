@@ -326,10 +326,11 @@ function ScreenView({ snap, busy, act }: { snap: LiveSnapshot; busy: LiveHostOp 
   const options: { key: string; label: string; run: () => Promise<void> }[] = [
     { key: "climb", label: "Climb", run: () => act("view", { view: "climb" }) },
     { key: "answers", label: "All answers", run: () => act("view", { view: "answers" }) },
+    { key: "given", label: "Audience answers", run: () => act("view", { view: "given" }) },
     { key: "leaderboard", label: "Leaderboard", run: () => act("leaderboard") },
   ];
   return (
-    <div role="group" aria-label="Projector" className="grid grid-cols-3 gap-2">
+    <div role="group" aria-label="Projector" className="grid grid-cols-2 gap-2 sm:grid-cols-4">
       {options.map((o) => {
         const on = o.key === current;
         return (

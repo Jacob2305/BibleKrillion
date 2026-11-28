@@ -677,6 +677,40 @@ describe("projector view after a reveal", () => {
     await env.hostOp(room.hostToken, "reveal");
     expect((await env.hostOp(room.hostToken, "view", { view: "podium" })).status).toBe(400);
   });
+
+  it("\"given\" lists every player per answer and who missed, only in that view", async () => {
+    const env = setup();
+    const { room, players, promptIds } = await startedRoom(env);
+    const easy = answerFor(promptIds[0]!, "plankton");
+    await env.answer(players[0]!.playerToken, 0, easy.text); // Ann
+    await env.answer(players[1]!.playerToken, 0, easy.text); // Bo; Cy doesn't answer
+    env.clock.t += 30_000;
+    const { data: revealed } = await env.hostOp(room.hostToken, "reveal");
+    expect(revealed.snapshot.reveal!.givers).toBeUndefined();
+    expect(revealed.snapshot.reveal!.missed).toBeUndefined();
+
+    const { data: given } = await env.hostOp(room.hostToken, "view", { view: "given" });
+    expect(given.snapshot).toMatchObject({ phase: "reveal", view: "given" });
+    expect(given.snapshot.reveal!.givers).toEqual({ [easy.text]: ["Ann", "Bo"] });
+    expect(given.snapshot.reveal!.missed).toEqual(["Cy"]);
+
+    // Removed players drop out of both lists.
+    const { data: kicked } = await env.hostOp(room.hostToken, "kick", { playerId: players[2]!.me.id });
+    expect(kicked.snapshot.reveal!.missed).toEqual([]);
+
+    // Back from the leaderboard to "given"; other views stay without the lists.
+    await env.hostOp(room.hostToken, "leaderboard");
+    const { data: again } = await env.hostOp(room.hostToken, "view", { view: "given" });
+    expect(again.snapshot.reveal!.givers).toEqual({ [easy.text]: ["Ann", "Bo"] });
+    const { data: answers } = await env.hostOp(room.hostToken, "view", { view: "answers" });
+    expect(answers.snapshot.reveal!.givers).toBeUndefined();
+  });
+
+  it("\"given\" is rejected before a reveal", async () => {
+    const env = setup();
+    const { room } = await startedRoom(env);
+    expect((await env.hostOp(room.hostToken, "view", { view: "given" })).status).toBe(409);
+  });
 });
 
 describe("reordering prompts", () => {

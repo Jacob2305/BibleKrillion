@@ -54,6 +54,10 @@ export interface LiveRoundReveal {
   players: number;
   /** canonical → nicknames, for Rare and deeper answers (a few names each). */
   finders: Record<string, string[]>;
+  /** Only when the projector shows the "given" view: canonical → every player who gave it. */
+  givers?: Record<string, string[]>;
+  /** Only with `givers`: players in the room who didn't lock an answer. */
+  missed?: string[];
 }
 
 /** Everything public about a room. Broadcast to every phone; contains no answers until a reveal. */
@@ -94,7 +98,8 @@ export interface LiveSnapshot {
   view?: LiveRevealView;
 }
 
-export type LiveRevealView = "climb" | "answers";
+/** "given" = every player's answer, for the audience to see who said what. */
+export type LiveRevealView = "climb" | "answers" | "given";
 
 /** This phone's player. */
 export interface LiveMe {

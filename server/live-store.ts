@@ -295,7 +295,7 @@ const toRoom = (r: RoomRow): LiveRoom => ({
   createdAt: Date.parse(r.created_at),
   endedAt: ms(r.ended_at),
   tierOverrides: r.tier_overrides ?? {},
-  revealView: r.reveal_view === "answers" ? "answers" : "climb",
+  revealView: r.reveal_view === "answers" || r.reveal_view === "given" ? r.reveal_view : "climb",
 });
 
 const toPlayer = (p: PlayerRow): LivePlayer => ({
@@ -325,6 +325,10 @@ const toSubmission = (s: SubmissionRow): LiveSubmission => ({
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function fail(what: string, error: { message: string }): never {
+  // 0006 only allowed 'climb' and 'answers'; 0007 adds 'given'.
+  if (/rooms_reveal_view_check/.test(error.message)) {
+    throw new HttpError(503, "The audience-answers view needs a database update: run supabase/migrations/0007_given_view.sql in the Supabase SQL Editor.", "migration");
+  }
   if (/reveal_view/.test(error.message)) {
     throw new HttpError(503, "Projector views need a database update: run supabase/migrations/0006_reveal_view.sql in the Supabase SQL Editor.", "migration");
   }

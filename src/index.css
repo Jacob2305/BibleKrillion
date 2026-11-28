@@ -125,6 +125,16 @@ h2 {
   from { opacity: var(--flash, 0.9); }
   to { opacity: 0; }
 }
+/* Projector, reaching One in a Million: one bright gold-white flash that fades (never repeats). */
+.gem-flash {
+  background: radial-gradient(circle at 50% 42%, #ffffff 0%, #fff1b8 35%, rgb(255 216 102 / 0.85) 70%);
+  animation: gem-flash 1400ms ease-out both;
+}
+@keyframes gem-flash {
+  0% { opacity: 0; }
+  8% { opacity: 0.95; }
+  100% { opacity: 0; }
+}
 .climb-spark {
   animation: climb-spark 800ms steps(8) both;
 }

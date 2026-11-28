@@ -34,6 +34,8 @@ export interface StagedClimb {
   meterRef: Ref<HTMLSpanElement>;
   /** Jump straight to the top. */
   skip: () => void;
+  /** Counts real arrivals at a stop (not skips or returning to a played round): effects key on it. */
+  landing: number;
 }
 
 export function useStagedClimb({
@@ -51,6 +53,7 @@ export function useStagedClimb({
 }): StagedClimb {
   const [phase, setPhase] = useState<StagedPhase>("idle");
   const [index, setIndex] = useState(-1);
+  const [landing, setLanding] = useState(0);
   const [camera, setCamera] = useState<{ target: number; instant: boolean; durationMs?: number }>({ target: CLIMB_START, instant: true });
   const meterRef = useRef<HTMLSpanElement>(null);
   const timers = useRef<number[]>([]);
@@ -121,6 +124,7 @@ export function useStagedClimb({
     const list = stopsRef.current;
     const tier = list[i]!;
     playSfx({ name: "land", tier });
+    setLanding((n) => n + 1);
     if (i + 1 < list.length) {
       state.current = { phase: "holding", index: i };
       setPhase("holding");
@@ -161,6 +165,7 @@ export function useStagedClimb({
     tier: index >= 0 ? (list[index] ?? null) : null,
     meterRef,
     skip,
+    landing,
     world: { ...camera, markers: phase !== "idle", onFrame, onArrive },
   };
 }

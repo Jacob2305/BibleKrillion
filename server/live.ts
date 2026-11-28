@@ -268,6 +268,20 @@ export function buildSnapshot(room: LiveRoom, players: readonly LivePlayer[], al
     reveal.answers = retierReveal(room, index, [...reveal.answers, ...aiAnswers.values()]);
     snapshot.reveal = { reveal, counts, finders, answered, players: active.length };
     snapshot.view = room.revealView;
+    if (room.revealView === "given") {
+      // Who said what, only while the projector shows it (keeps other snapshots small).
+      const givers: Record<string, string[]> = {};
+      const gave = new Set<string>();
+      for (const s of roundSubs) {
+        const name = nicknames.get(s.playerId);
+        if (!name) continue;
+        (givers[s.canonical] ??= []).push(name);
+        gave.add(s.playerId);
+      }
+      for (const names of Object.values(givers)) names.sort((a, b) => a.localeCompare(b));
+      snapshot.reveal.givers = givers;
+      snapshot.reveal.missed = active.filter((p) => !gave.has(p.id)).map((p) => p.nickname).sort((a, b) => a.localeCompare(b));
+    }
   }
   return snapshot;
 }
@@ -555,11 +569,11 @@ export async function host(body: Record<string, unknown>, deps: LiveDeps): Promi
     }
 
     case "view": {
-      // The host picks what the projector shows after a reveal: the climb or the answer board
-      // (also the way back from the leaderboard).
+      // The host picks what the projector shows after a reveal: the climb, the answer board or
+      // who said what (also the way back from the leaderboard).
       requirePhase("reveal", "leaderboard");
       const view = body.view;
-      if (view !== "climb" && view !== "answers") throw new HttpError(400, "Show the climb or the answers?");
+      if (view !== "climb" && view !== "answers" && view !== "given") throw new HttpError(400, "Show the climb, the answers or the audience's answers?");
       await change(view === room.revealView ? { phase: "reveal" } : { phase: "reveal", revealView: view });
       break;
     }
